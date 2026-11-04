@@ -1,0 +1,41 @@
+// Write docs/planning/11-dev-role-design.v5-candidate.md from design 11: the owner decisions of
+// 2026-11-03/04 (technical-decision role; Dev asks one place; PO scope default = pit-in seats) and an
+// explicit project adapter (deliverable 1.4). The old texts are copied from the design doc as they
+// are, so the candidate's replacements apply exactly. Usage: node experiments/structure/make-v5-candidate.mjs
+import { readFileSync, writeFileSync } from 'node:fs';
+
+const src = 'docs/planning/11-dev-role-design.md';
+const lines = readFileSync(src, 'utf8').replace(/\r\n/g, '\n').split('\n');
+const one = (re) => { const m = lines.filter((l) => re.test(l)); if (m.length !== 1) throw new Error(`${re}: ${m.length} lines`); return m[0]; };
+const x15 = one(/^\| X15 \|/);
+const adapterList = one(/^- \*\*案件アダプタに置くもの\*\*: リスクマップ/);
+
+const newX15 = '| X15 | **誰が決めるか・誰に聞くか（1 か所で定義）** | 決める範囲の既定はピットイン開発プロセスの席に合わせる。**PO**: 顧客に見える文言・UX・価格の方針、backlog の順序、機能仕様の承認、実装計画の承認、範囲の約束、リスクの受容。**技術判断者**: 戻しにくい技術の選択（データストア・認証・課金・公開 API の形・基盤）と、基盤の制約・費用のトレードオフを決め、決定記録に残す。**Dev**: 承認された設計の中の判断（局所の設計・テストの書き方・命名・着手順）を決め、理由を残す。戻せない操作は X10。**聞く先は 1 つにする**: 技術の問いは技術判断者に聞き、事業への影響があれば技術判断者が PO に渡す（Dev が PO と技術判断者の両方に聞くと方針がぶれる）。顧客に見える文言・UX・価格の問いだけは PO に聞く。案件に技術判断者がいなければ PO に聞く。範囲・聞く先・経路は案件アダプタ（X17）で上書きできる | 〔オーナー〕2026-11-03（技術判断者を別のロールにし、Dev の問い合わせ先を 1 つにする）、2026-11-04（PO の決める範囲の既定をピットイン型にする）〔作法〕process-compass の席（技術判断者・PO、ADR-0054・0066）、DACI〔GQ〕憲章 §0 ルール 4（GQ は PO の範囲を 2 つに絞る。GQ のアダプタの値にする） |';
+const x17 = '| X17 | **案件アダプタは 1 か所で読む** | 受け付けで案件アダプタを読む（既定の場所はリポジトリの `.claude/dev-adapter.md`、無ければ CLAUDE.md の案件の値）。項目: 成果物（調査メモ・計画・状態）の置き場所 / テストと検査の走らせ方 / 変更の記録の形（commit・PR）/ 聞く先とその経路（ラベル・宛先）/ 決める範囲の上書き（X15）/ 戻せない操作と承認者（X10）/ リスクマップと標準変更（§2b）。書かれていない項目はこの文書の既定に従い、既定で決めたことを報告に書く | 〔推論〕v1 のアダプタ（48 項目）を Dev が使う項目に絞った〔GQ〕案件の値は CLAUDE.md に書く運用 |';
+const newAdapterList = `${adapterList.replace(/〔推論〕$/, '')}、聞く先と経路、決める範囲の上書き（原則 X15・X17）〔推論〕`;
+const reps = [
+  { old: x15, new: `${newX15}\n${x17}` },
+  { old: adapterList, new: newAdapterList },
+];
+const body = `# 設計書 11 第 5 版の候補: 誰が決めるか・誰に聞くか（オーナーの決定）と案件アダプタ
+
+作成: 2026-11-04 / 状態: **候補（評価の後にオーナーに採否を聞く）**
+根拠: オーナーの決定 2026-11-03（技術判断者を別のロールに、Dev の問い合わせ先を 1 つに。\`research-role-task-difficulty.md\` §7）、2026-11-04（PO の範囲の既定をピットイン型に。\`research-role-task-catalog.md\` 末尾）、成果物 1.4（汎用部分と案件固有部分を分ける）
+このファイルは \`experiments/structure/make-v5-candidate.mjs\` が設計書 11 から作る
+
+## 案
+
+| | いま（第 4 版） | 案 |
+|---|---|---|
+| X15 | ${x15.split('|')[3].trim().slice(0, 60)}… | PO の範囲をピットイン型に、技術判断者を置き、聞く先を 1 つにする |
+| X17 | （無し） | 案件アダプタを 1 か所で読む。項目と既定 |
+| §2b の「案件アダプタに置くもの」 | リスクマップ・標準変更・戻せない操作 | ＋ 聞く先と経路・決める範囲の上書き |
+
+## 置き換え（apply の台本が使う）
+
+\`\`\`json
+${JSON.stringify(reps, null, 1)}
+\`\`\`
+`;
+writeFileSync('docs/planning/11-dev-role-design.v5-candidate.md', body);
+console.log('wrote docs/planning/11-dev-role-design.v5-candidate.md');

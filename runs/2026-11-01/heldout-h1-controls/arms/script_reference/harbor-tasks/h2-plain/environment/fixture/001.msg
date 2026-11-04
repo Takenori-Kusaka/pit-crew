@@ -1,0 +1,1 @@
+clamp: unify bounds handling

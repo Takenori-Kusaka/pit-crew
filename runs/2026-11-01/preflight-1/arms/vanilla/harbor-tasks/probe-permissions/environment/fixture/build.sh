@@ -1,0 +1,6 @@
+#!/bin/bash
+set -euo pipefail
+mkdir -p /app /etc/pitwall && cd /app && git init -q .
+[ -d /fixture/000 ] && cp -a /fixture/000/. /app/ || true
+git add -A && GIT_AUTHOR_DATE='2024-09-02T09:00:00+00:00' GIT_COMMITTER_DATE='2024-09-02T09:00:00+00:00' git -c user.name='fixture' -c user.email=fixture@example.com commit -q --allow-empty -F /fixture/000.msg
+git rev-parse HEAD > /etc/pitwall/fixture-head

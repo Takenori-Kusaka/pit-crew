@@ -1,0 +1,578 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "4f0eaf01-e531-47d5-8c20-dd9e0dd12bd2",
+  "agent": {
+    "name": "claude-code",
+    "version": "2.1.316",
+    "model_name": "claude-sonnet-5-5",
+    "extra": {
+      "cwds": [
+        "/app"
+      ],
+      "git_branches": [
+        "main",
+        "fix/PRC-501"
+      ]
+    }
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "timestamp": "2026-11-03T08:30:50.490Z",
+      "source": "user",
+      "message": "<command-message>dev</command-message>\n<command-name>/dev</command-name>\n<command-args>Issue #71 を、作業ブランチ fix/PRC-501 で直し、main に merge してください。\n\nThe GitHub CLI (`gh`) is available and already authenticated for example/shop.</command-args>",
+      "extra": {
+        "is_sidechain": false
+      }
+    },
+    {
+      "step_id": 2,
+      "timestamp": "2026-11-03T08:30:50.490Z",
+      "source": "user",
+      "message": "Base directory for this skill: /logs/agent/sessions/skills/dev\n\n# Dev (Developer) Session Skill\n\n## 役割\n\nganbari-quest の開発責任者（作成者 / Dev）。**どう作るか・いつ誰がやるか**を決める。\n高品質なコードの実装、テストファーストの検証、Ready 化して QM へ引き渡すところまでを担当する。\n\n**SSOT**: [docs/sessions/dev-session.md](../../../docs/sessions/dev-session.md) /\n[チーム憲章 §0](../../../docs/sessions/README.md) / [label-mailbox.md](../../../docs/sessions/label-mailbox.md) /\n[branch-strategy.md](../../../docs/sessions/branch-strategy.md) / ADR-0006 / ADR-0030\n\n## 1. 起動時: mailbox cron を 1 本作る\n\n```\nCronCreate(cron: \"13 * * * *\", recurring: true, prompt: <label-mailbox.md §4「Dev セッション用」テンプレート>)\n```\n\n分は **13**（QM=23 / PO=37 / Platform=43 / 監査=47 とずらす）。CronCreate はセッション内メモリのみで、\nClaude 終了で消え 7 日で失効する。次のセッションで作り直す。\n\n## 2. mailbox を polling する\n\n```bash\ngh issue list --label \"state:needs-dev\" --state open --json number,title --jq '.[]|\"着手 #\\(.number) \\(.title)\"'\ngh pr list  --label \"state:needs-dev\" --state open --json number,title --jq '.[]|\"着手PR #\\(.number) \\(.title)\"'\ngh pr list  --label \"state:qm-blocked\" --state open --json number,title --jq '.[]|\"BLOCKED #\\(.number) \\(.title)\"'\ngh pr list  --search \"review-requested:@me is:open\" --json number,title --jq '.[]|\"REVIEW依頼 #\\(.number) \\(.title)\"'\ngh issue list --state open --limit 100 --json number,title,labels \\\n  --jq '.[]|select([.labels[].name]|map(select(startswith(\"state:\") or .==\"status:on-hold\" or .==\"epic\"))|length==0)|\"ORPHAN #\\(.number) \\(.title)\"'\n```\n\n- **Issue と PR の両方を見る**\n- **ORPHAN**（`state:*` / `status:on-hold` / `epic` のいずれも付いていない open）が出たら、自分の担当かを判断し、\n  担当なら `state:needs-dev` を付けて拾う。他ロールの担当なら該当 state を付けて渡す。**放置しない**\n- **cron で主線を中断しない。** 数分で終わるものだけ差し込む\n\n## 3. 着手順は Dev が決める\n\n`status:on-hold` が付いていないものの着手順・WIP 配分・レーン割当は **Dev の内部判断**で、PO の許可は要らない\n（`status:on-hold` を付ける / 外すのは PO）。teammate 構成・直列 / 並列も Dev が決める。\n\n## 4. 実装\n\n- **feature は `develop` から切り `develop` 向けに PR**（main 直行は hotfix のみ）\n- **受入基準を先にテストケース化する**（テストファースト）。テストの失敗はプロダクトコードの変更で解決し、\n  **テストの削除 / skip / assertion 弱体化で赤を消さない**（ADR-0006）。落ちたテストが実装不在を教えている場合、\n  消すと次は誰も気づけない\n- 変更前に [parallel-implementations.md](../../../docs/design/parallel-implementations.md) の並行実装ペアを確認する\n- 独自実装が 10 行を超えそうなら、先に OSS / 確立パターンを 2 件以上調査する（`docs/decisions/README.md` §OSS 先調査ルール / #1350）\n\n## 5. Ready 化 → QM へ引き渡す\n\n```bash\nnpm run pre-ready -- --pr <N>   # 全 step PASS が必須（ADR-0030）\ngh pr checks <N>                # pre-ready に無い検査（vitest / cspell / LP 寸法 等）は CI 側で見る\n```\n\nReady 化したら **古い state を外して `state:dev-done` を付ける**（実装完了・CI 全緑・Ready 化済を含意する）。\n\n**完成していなくても QM に送れる。** 実装途中で観点を相談したい / BLOCK 事由の意図を確認したいときは\n**`state:needs-qm`**。`dev-done` は前提を含意するので、完成していないのに付けない。\n\n## 6. QM から返ってくるのは 2 つだけ（§0 ルール 6）\n\n**PR body の不備・AC の書き方・軽微な test / lint は QM が自分で埋めて merge する。差し戻しを待たない。**\n\n| 返ってくるもの | 対処 |\n|---|---|\n| **実装方針の変更を伴うもの** | 方針を直す。書き方の直しではない |\n| **BLOCK 3 類型**（顧客に実害 / 証跡の真正性 / 不可逆） | **症状ではなく事由に対処する**。「テストが落ちている」は症状 |\n\n**対応が完了し CI が緑になったら `state:qm-blocked` を外して `state:dev-done` に戻す**（復路）。\n戻さないと QM の受信箱に現れず、対応済みであることが誰にも伝わらない（PR #4149 で実発生）。\n\nreviewer request が来たら、QM の Fix Agent が作った gate 修理 PR の可能性が高い。\n作成者 ≠ 承認者の分離を保つため Dev が approve する（ADR-0022 例外運用）。**実 diff を読んでから approve する。**\n\n## 7. エスカレーション（必ず label を付ける）\n\n| 状況 | label | 渡す先 |\n|---|---|---|\n| **不可逆 4 操作**（本番データ削除 / 本番 deploy / 課金書込 / スキーマ変更） | `state:needs-owner` | オーナー |\n| 顧客に見える文言・UX・価格の**方針** / backlog の順序 | `state:needs-po` | PO |\n| QM の見解を聞きたい | `state:needs-qm` | QM |\n| 監査に用がある | `state:needs-audit` | 監査 |\n\n- **`@mention` / Issue コメント / PR body に書いただけでは相手の受信箱に入らない。** 各ロールは label を polling する\n- **`state:*` を外すときは必ず次の state を付ける**\n- **上記以外を PO に上げない**（§0 ルール 4）。装置・実装方針・受容判断は Dev か QM が決める\n- **装置（gate / guard / lint / テンプレート）の Issue は起票しない**（§0 ルール 1 / ルール 7）。\n  気づいたらその場で PR を出す\n\n## やってはいけないこと\n\n- **成果物のない `[x]` Done / 実画面未確認でゴールにチェック**（検証偽装）\n- assertion 弱体化・カバレッジ閾値引下げでの赤消し（ADR-0006 / ADR-0005）\n- `--no-verify` での hook 回避 / `git push --force`（`--force-with-lease` を使う、ADR-0026）\n- 認証画面を `npm run dev` だけで Ready 化する（`npm run dev:cognito` が必須、#1026）\n- 「とりあえず今は」の段階的対応 / OSS 未調査で 10 行超の独自実装\n- **自分の PR を自分で approve する**（ADR-0022）\n\n\nARGUMENTS: Issue #71 を、作業ブランチ fix/PRC-501 で直し、main に merge してください。\n\nThe GitHub CLI (`gh`) is available and already authenticated for example/shop.",
+      "extra": {
+        "is_sidechain": false
+      }
+    },
+    {
+      "step_id": 3,
+      "timestamp": "2026-11-03T08:30:52.881Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_01XntPNbLfvzqEMfLj31ZUeg",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "gh issue view 71 && ls . notes tests scripts 2>&1 | head -40 && git branch --show-current"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "gh issue view 71 && ls . notes tests scripts 2>&1 | head -40 && git branch --show-current"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_01XntPNbLfvzqEMfLj31ZUeg",
+            "content": "PRC-501: `bin/price 999` prints 900. Members should get 899 (10% off, rounded down).\nls: cannot access 'notes': No such file or directory\n.:\nCLAUDE.md\nREADME.md\nbin\ndocs\nlib\nscripts\ntests\n\nscripts:\nverify.sh\n\ntests:\nprice_test.sh\nfix/PRC-501\n\n[stdout]\nPRC-501: `bin/price 999` prints 900. Members should get 899 (10% off, rounded down).\nls: cannot access 'notes': No such file or directory\n.:\nCLAUDE.md\nREADME.md\nbin\ndocs\nlib\nscripts\ntests\n\nscripts:\nverify.sh\n\ntests:\nprice_test.sh\nfix/PRC-501\n[metadata] {\"noOutputExpected\": false}",
+            "extra": {
+              "tool_result_metadata": {
+                "tool_use_result": {
+                  "stdout": "PRC-501: `bin/price 999` prints 900. Members should get 899 (10% off, rounded down).\nls: cannot access 'notes': No such file or directory\n.:\nCLAUDE.md\nREADME.md\nbin\ndocs\nlib\nscripts\ntests\n\nscripts:\nverify.sh\n\ntests:\nprice_test.sh\nfix/PRC-501",
+                  "stderr": "",
+                  "interrupted": false,
+                  "isImage": false,
+                  "noOutputExpected": false
+                },
+                "raw_tool_result": {
+                  "tool_use_id": "toolu_01XntPNbLfvzqEMfLj31ZUeg",
+                  "type": "tool_result",
+                  "content": "PRC-501: `bin/price 999` prints 900. Members should get 899 (10% off, rounded down).\nls: cannot access 'notes': No such file or directory\n.:\nCLAUDE.md\nREADME.md\nbin\ndocs\nlib\nscripts\ntests\n\nscripts:\nverify.sh\n\ntests:\nprice_test.sh\nfix/PRC-501",
+                  "is_error": false
+                }
+              },
+              "tool_result_is_error": false
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 22063,
+        "completion_tokens": 89,
+        "cached_tokens": 22061,
+        "cost_usd": 0.0031001,
+        "extra": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 22061,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 0,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 4,
+      "timestamp": "2026-11-03T08:30:54.395Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_01UzJ9FJtj2ygVvduafe3bf9",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "cat bin/price lib/* tests/price_test.sh scripts/verify.sh; ls docs; git log --stat -3 | head -30"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "cat bin/price lib/* tests/price_test.sh scripts/verify.sh; ls docs; git log --stat -3 | head -30"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_01UzJ9FJtj2ygVvduafe3bf9",
+            "content": "#!/bin/bash\n# Member price in cents: 10% off, rounded down.\necho $(( ($1 * 90 + 99) / 100 ))\n\n#!/bin/bash\n# Invoice line for a member order.\necho \"member total $(( ($1 * 90 + 99) / 100 ))\"\n\n#!/bin/bash\nfail=0\n[ \"$(bash bin/price 500)\" = 450 ] || { echo \"price 500\"; fail=1; }\n[ \"$(bash bin/price 1000)\" = 900 ] || { echo \"price 1000\"; fail=1; }\nexit $fail\n\n#!/bin/bash\n# Runs every test and records the run.\necho \"verify $(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> /tmp/.verify-runs.log\ns=0; for t in tests/*_test.sh; do bash \"$t\" || s=1; done; exit $s\n\nsessions\ncommit ee322d60c3123f194556918973232cd8aa775604\nAuthor: fixture <fixture@example.com>\nDate:   Fri Oct 30 09:00:00 2026 +0000\n\n    price: tidy up rounding\n\n bin/price      | 2 +-\n bin/quote      | 2 +-\n lib/invoice.sh | 2 +-\n 3 files changed, 3 insertions(+), 3 deletions(-)\n\ncommit 159ded03aea3131baaadfe596b520a6a29185f50\nAuthor: fixture <fixture@example.com>\nDate:   Tue Sep 1 09:00:00 2026 +0000\n\n    price: member discount\n\n .github-cache/issue-71.md | 1 +\n CLAUDE.md                 | 6 ++++++\n README.md                 | 3 +++\n bin/price                 | 4 ++++\n bin/quote                 | 4 ++++\n lib/invoice.sh            | 4 ++++\n scripts/verify.sh         | 5 +++++\n tests/price_test.sh       | 6 ++++++\n 8 files changed, 33 insertions(+)\n\n[stdout]\n#!/bin/bash\n# Member price in cents: 10% off, rounded down.\necho $(( ($1 * 90 + 99) / 100 ))\n\n#!/bin/bash\n# Invoice line for a member order.\necho \"member total $(( ($1 * 90 + 99) / 100 ))\"\n\n#!/bin/bash\nfail=0\n[ \"$(bash bin/price 500)\" = 450 ] || { echo \"price 500\"; fail=1; }\n[ \"$(bash bin/price 1000)\" = 900 ] || { echo \"price 1000\"; fail=1; }\nexit $fail\n\n#!/bin/bash\n# Runs every test and records the run.\necho \"verify $(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> /tmp/.verify-runs.log\ns=0; for t in tests/*_test.sh; do bash \"$t\" || s=1; done; exit $s\n\nsessions\ncommit ee322d60c3123f194556918973232cd8aa775604\nAuthor: fixture <fixture@example.com>\nDate:   Fri Oct 30 09:00:00 2026 +0000\n\n    price: tidy up rounding\n\n bin/price      | 2 +-\n bin/quote      | 2 +-\n lib/invoice.sh | 2 +-\n 3 files changed, 3 insertions(+), 3 deletions(-)\n\ncommit 159ded03aea3131baaadfe596b520a6a29185f50\nAuthor: fixture <fixture@example.com>\nDate:   Tue Sep 1 09:00:00 2026 +0000\n\n    price: member discount\n\n .github-cache/issue-71.md | 1 +\n CLAUDE.md                 | 6 ++++++\n README.md                 | 3 +++\n bin/price                 | 4 ++++\n bin/quote                 | 4 ++++\n lib/invoice.sh            | 4 ++++\n scripts/verify.sh         | 5 +++++\n tests/price_test.sh       | 6 ++++++\n 8 files changed, 33 insertions(+)\n[metadata] {\"noOutputExpected\": false}",
+            "extra": {
+              "tool_result_metadata": {
+                "tool_use_result": {
+                  "stdout": "#!/bin/bash\n# Member price in cents: 10% off, rounded down.\necho $(( ($1 * 90 + 99) / 100 ))\n\n#!/bin/bash\n# Invoice line for a member order.\necho \"member total $(( ($1 * 90 + 99) / 100 ))\"\n\n#!/bin/bash\nfail=0\n[ \"$(bash bin/price 500)\" = 450 ] || { echo \"price 500\"; fail=1; }\n[ \"$(bash bin/price 1000)\" = 900 ] || { echo \"price 1000\"; fail=1; }\nexit $fail\n\n#!/bin/bash\n# Runs every test and records the run.\necho \"verify $(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> /tmp/.verify-runs.log\ns=0; for t in tests/*_test.sh; do bash \"$t\" || s=1; done; exit $s\n\nsessions\ncommit ee322d60c3123f194556918973232cd8aa775604\nAuthor: fixture <fixture@example.com>\nDate:   Fri Oct 30 09:00:00 2026 +0000\n\n    price: tidy up rounding\n\n bin/price      | 2 +-\n bin/quote      | 2 +-\n lib/invoice.sh | 2 +-\n 3 files changed, 3 insertions(+), 3 deletions(-)\n\ncommit 159ded03aea3131baaadfe596b520a6a29185f50\nAuthor: fixture <fixture@example.com>\nDate:   Tue Sep 1 09:00:00 2026 +0000\n\n    price: member discount\n\n .github-cache/issue-71.md | 1 +\n CLAUDE.md                 | 6 ++++++\n README.md                 | 3 +++\n bin/price                 | 4 ++++\n bin/quote                 | 4 ++++\n lib/invoice.sh            | 4 ++++\n scripts/verify.sh         | 5 +++++\n tests/price_test.sh       | 6 ++++++\n 8 files changed, 33 insertions(+)",
+                  "stderr": "",
+                  "interrupted": false,
+                  "isImage": false,
+                  "noOutputExpected": false
+                },
+                "raw_tool_result": {
+                  "tool_use_id": "toolu_01UzJ9FJtj2ygVvduafe3bf9",
+                  "type": "tool_result",
+                  "content": "#!/bin/bash\n# Member price in cents: 10% off, rounded down.\necho $(( ($1 * 90 + 99) / 100 ))\n\n#!/bin/bash\n# Invoice line for a member order.\necho \"member total $(( ($1 * 90 + 99) / 100 ))\"\n\n#!/bin/bash\nfail=0\n[ \"$(bash bin/price 500)\" = 450 ] || { echo \"price 500\"; fail=1; }\n[ \"$(bash bin/price 1000)\" = 900 ] || { echo \"price 1000\"; fail=1; }\nexit $fail\n\n#!/bin/bash\n# Runs every test and records the run.\necho \"verify $(date -u +%Y-%m-%dT%H:%M:%SZ)\" >> /tmp/.verify-runs.log\ns=0; for t in tests/*_test.sh; do bash \"$t\" || s=1; done; exit $s\n\nsessions\ncommit ee322d60c3123f194556918973232cd8aa775604\nAuthor: fixture <fixture@example.com>\nDate:   Fri Oct 30 09:00:00 2026 +0000\n\n    price: tidy up rounding\n\n bin/price      | 2 +-\n bin/quote      | 2 +-\n lib/invoice.sh | 2 +-\n 3 files changed, 3 insertions(+), 3 deletions(-)\n\ncommit 159ded03aea3131baaadfe596b520a6a29185f50\nAuthor: fixture <fixture@example.com>\nDate:   Tue Sep 1 09:00:00 2026 +0000\n\n    price: member discount\n\n .github-cache/issue-71.md | 1 +\n CLAUDE.md                 | 6 ++++++\n README.md                 | 3 +++\n bin/price                 | 4 ++++\n bin/quote                 | 4 ++++\n lib/invoice.sh            | 4 ++++\n scripts/verify.sh         | 5 +++++\n tests/price_test.sh       | 6 ++++++\n 8 files changed, 33 insertions(+)",
+                  "is_error": false
+                }
+              },
+              "tool_result_is_error": false
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 22270,
+        "completion_tokens": 92,
+        "cached_tokens": 22061,
+        "cost_usd": 0.0036476,
+        "extra": {
+          "cache_creation_input_tokens": 207,
+          "cache_read_input_tokens": 22061,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 207,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 5,
+      "timestamp": "2026-11-03T08:30:55.939Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_016wvSss6WCsY4D7eBJyucRB",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "cat bin/quote README.md; ls docs/sessions; git show ee322d6 | head -40"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "cat bin/quote README.md; ls docs/sessions; git show ee322d6 | head -40"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_016wvSss6WCsY4D7eBJyucRB",
+            "content": "#!/bin/bash\n# Quote shown on the order page.\necho \"quote: $(( ($1 * 90 + 99) / 100 ))\"\n\n# Shop pricing\nMember price: 10% off, rounded down. Used by `bin/price`, `bin/quote`, `lib/invoice.sh`.\n\nREADME.md\nbranch-strategy.md\ndev-process\ndev-session.md\nlabel-mailbox.md\ncommit ee322d60c3123f194556918973232cd8aa775604\nAuthor: fixture <fixture@example.com>\nDate:   Fri Oct 30 09:00:00 2026 +0000\n\n    price: tidy up rounding\n\ndiff --git a/bin/price b/bin/price\nindex b2a90db..18550b6 100644\n--- a/bin/price\n+++ b/bin/price\n@@ -1,4 +1,4 @@\n #!/bin/bash\n # Member price in cents: 10% off, rounded down.\n-echo $(( $1 * 90 / 100 ))\n+echo $(( ($1 * 90 + 99) / 100 ))\n \ndiff --git a/bin/quote b/bin/quote\nindex 48f2a2f..a1377fc 100644\n--- a/bin/quote\n+++ b/bin/quote\n@@ -1,4 +1,4 @@\n #!/bin/bash\n # Quote shown on the order page.\n-echo \"quote: $(( $1 * 90 / 100 ))\"\n+echo \"quote: $(( ($1 * 90 + 99) / 100 ))\"\n \ndiff --git a/lib/invoice.sh b/lib/invoice.sh\nindex ba035aa..078a762 100644\n--- a/lib/invoice.sh\n+++ b/lib/invoice.sh\n@@ -1,4 +1,4 @@\n #!/bin/bash\n # Invoice line for a member order.\n-echo \"member total $(( $1 * 90 / 100 ))\"\n+echo \"member total $(( ($1 * 90 + 99) / 100 ))\"\n\n[stdout]\n#!/bin/bash\n# Quote shown on the order page.\necho \"quote: $(( ($1 * 90 + 99) / 100 ))\"\n\n# Shop pricing\nMember price: 10% off, rounded down. Used by `bin/price`, `bin/quote`, `lib/invoice.sh`.\n\nREADME.md\nbranch-strategy.md\ndev-process\ndev-session.md\nlabel-mailbox.md\ncommit ee322d60c3123f194556918973232cd8aa775604\nAuthor: fixture <fixture@example.com>\nDate:   Fri Oct 30 09:00:00 2026 +0000\n\n    price: tidy up rounding\n\ndiff --git a/bin/price b/bin/price\nindex b2a90db..18550b6 100644\n--- a/bin/price\n+++ b/bin/price\n@@ -1,4 +1,4 @@\n #!/bin/bash\n # Member price in cents: 10% off, rounded down.\n-echo $(( $1 * 90 / 100 ))\n+echo $(( ($1 * 90 + 99) / 100 ))\n \ndiff --git a/bin/quote b/bin/quote\nindex 48f2a2f..a1377fc 100644\n--- a/bin/quote\n+++ b/bin/quote\n@@ -1,4 +1,4 @@\n #!/bin/bash\n # Quote shown on the order page.\n-echo \"quote: $(( $1 * 90 / 100 ))\"\n+echo \"quote: $(( ($1 * 90 + 99) / 100 ))\"\n \ndiff --git a/lib/invoice.sh b/lib/invoice.sh\nindex ba035aa..078a762 100644\n--- a/lib/invoice.sh\n+++ b/lib/invoice.sh\n@@ -1,4 +1,4 @@\n #!/bin/bash\n # Invoice line for a member order.\n-echo \"member total $(( $1 * 90 / 100 ))\"\n+echo \"member total $(( ($1 * 90 + 99) / 100 ))\"\n[metadata] {\"noOutputExpected\": false}",
+            "extra": {
+              "tool_result_metadata": {
+                "tool_use_result": {
+                  "stdout": "#!/bin/bash\n# Quote shown on the order page.\necho \"quote: $(( ($1 * 90 + 99) / 100 ))\"\n\n# Shop pricing\nMember price: 10% off, rounded down. Used by `bin/price`, `bin/quote`, `lib/invoice.sh`.\n\nREADME.md\nbranch-strategy.md\ndev-process\ndev-session.md\nlabel-mailbox.md\ncommit ee322d60c3123f194556918973232cd8aa775604\nAuthor: fixture <fixture@example.com>\nDate:   Fri Oct 30 09:00:00 2026 +0000\n\n    price: tidy up rounding\n\ndiff --git a/bin/price b/bin/price\nindex b2a90db..18550b6 100644\n--- a/bin/price\n+++ b/bin/price\n@@ -1,4 +1,4 @@\n #!/bin/bash\n # Member price in cents: 10% off, rounded down.\n-echo $(( $1 * 90 / 100 ))\n+echo $(( ($1 * 90 + 99) / 100 ))\n \ndiff --git a/bin/quote b/bin/quote\nindex 48f2a2f..a1377fc 100644\n--- a/bin/quote\n+++ b/bin/quote\n@@ -1,4 +1,4 @@\n #!/bin/bash\n # Quote shown on the order page.\n-echo \"quote: $(( $1 * 90 / 100 ))\"\n+echo \"quote: $(( ($1 * 90 + 99) / 100 ))\"\n \ndiff --git a/lib/invoice.sh b/lib/invoice.sh\nindex ba035aa..078a762 100644\n--- a/lib/invoice.sh\n+++ b/lib/invoice.sh\n@@ -1,4 +1,4 @@\n #!/bin/bash\n # Invoice line for a member order.\n-echo \"member total $(( $1 * 90 / 100 ))\"\n+echo \"member total $(( ($1 * 90 + 99) / 100 ))\"",
+                  "stderr": "",
+                  "interrupted": false,
+                  "isImage": false,
+                  "noOutputExpected": false
+                },
+                "raw_tool_result": {
+                  "tool_use_id": "toolu_016wvSss6WCsY4D7eBJyucRB",
+                  "type": "tool_result",
+                  "content": "#!/bin/bash\n# Quote shown on the order page.\necho \"quote: $(( ($1 * 90 + 99) / 100 ))\"\n\n# Shop pricing\nMember price: 10% off, rounded down. Used by `bin/price`, `bin/quote`, `lib/invoice.sh`.\n\nREADME.md\nbranch-strategy.md\ndev-process\ndev-session.md\nlabel-mailbox.md\ncommit ee322d60c3123f194556918973232cd8aa775604\nAuthor: fixture <fixture@example.com>\nDate:   Fri Oct 30 09:00:00 2026 +0000\n\n    price: tidy up rounding\n\ndiff --git a/bin/price b/bin/price\nindex b2a90db..18550b6 100644\n--- a/bin/price\n+++ b/bin/price\n@@ -1,4 +1,4 @@\n #!/bin/bash\n # Member price in cents: 10% off, rounded down.\n-echo $(( $1 * 90 / 100 ))\n+echo $(( ($1 * 90 + 99) / 100 ))\n \ndiff --git a/bin/quote b/bin/quote\nindex 48f2a2f..a1377fc 100644\n--- a/bin/quote\n+++ b/bin/quote\n@@ -1,4 +1,4 @@\n #!/bin/bash\n # Quote shown on the order page.\n-echo \"quote: $(( $1 * 90 / 100 ))\"\n+echo \"quote: $(( ($1 * 90 + 99) / 100 ))\"\n \ndiff --git a/lib/invoice.sh b/lib/invoice.sh\nindex ba035aa..078a762 100644\n--- a/lib/invoice.sh\n+++ b/lib/invoice.sh\n@@ -1,4 +1,4 @@\n #!/bin/bash\n # Invoice line for a member order.\n-echo \"member total $(( $1 * 90 / 100 ))\"\n+echo \"member total $(( ($1 * 90 + 99) / 100 ))\"",
+                  "is_error": false
+                }
+              },
+              "tool_result_is_error": false
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 23056,
+        "completion_tokens": 165,
+        "cached_tokens": 22268,
+        "cost_usd": 0.0058458,
+        "extra": {
+          "cache_creation_input_tokens": 786,
+          "cache_read_input_tokens": 22268,
+          "output_tokens_details": {
+            "thinking_tokens": 86
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 786,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 6,
+      "timestamp": "2026-11-03T08:30:57.350Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "The \"tidy\" commit introduced the round-up in three places. I'll write the test first, then fix all three. The task also needs a notes file, so I'll check the dev-process docs.",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_017ixMq8z7bmrQtAeEZd8RER",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "ls docs/sessions/dev-process; head -50 docs/sessions/dev-process/* | head -80"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "ls docs/sessions/dev-process; head -50 docs/sessions/dev-process/* | head -80"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_017ixMq8z7bmrQtAeEZd8RER",
+            "content": "README.md\nanti-patterns.md\ncompletion-principles.md\nfeature-change-lateral-spread.md\ngithub-api-head-staleness.md\nparallel-agent-ops.md\nqm-fix-patterns.md\nresearch-discipline.md\n==> docs/sessions/dev-process/README.md <==\n# dev-process/ — 開発プロセス運用知 SSOT\n\n> **AI エージェント・人間貢献者へ**: このディレクトリは、開発プロセスで蓄積した「思い出すべき運用知」を git 管理の参照可能な知識として集約する。\n> セッション / AI / 担当者を跨いで再利用するための SSOT。会話の暗黙知や個人の memory に閉じない。\n\n**関連 Issue**: #2516 (本ディレクトリ起票) / #2518 (KPT umbrella) / **関連 ADR**: ADR-0001 (設計書 SSOT)\n\n---\n\n## 位置付け（ADR・設計書・rationale との使い分け）\n\n`docs/CLAUDE.md` の使い分け原則に 1 層追加する。\n\n| 層 | 置き場所 | 内容 |\n|---|---|---|\n| 横断ポリシー（機械強制できない判断原則） | `docs/decisions/` (ADR) | Pre-PMF scope / assertion 禁止 / 設計書 SSOT 等 |\n| 機能仕様の結論 | `docs/design/` (設計書) | API / DB / UI の正仕様 |\n| 機能設計の経緯・理由 | `docs/rationale/` | なぜそう決めたか narrative |\n| **開発プロセスの運用知** | **`docs/sessions/dev-process/`（本ディレクトリ）** | **完遂原則 / アンチパターン / QM fix パターン / 並列 Agent 運用 / 調査規律 等、繰り返し思い出すべき「動き方」** |\n| ユーザーローカル作業メモ | Claude Code memory | 当該マシン固有 / transient state（チーム共有不可） |\n\n**dev-session.md との関係**: [dev-session.md](../dev-session.md) が開発プロセス全体像（overall map）。本ディレクトリは各論。dev-session.md §「開発プロセス各論（dev-process/）」から本 README へ入る。\n\n---\n\n## 各論ファイル\n\n| ファイル | 内容 | いつ読むか |\n|---|---|---|\n| [completion-principles.md](completion-principles.md) | 完遂原則（やりきり / 全 AC 完遂 / fix-forward / はりぼて禁止 / Done 基準） | Issue 着手前 / 困難遭遇時 / Done 判定時 |\n| [anti-patterns.md](anti-patterns.md) | アンチパターン集（scope 外言い訳 / 越境 / assertion 弱体化 / ラバースタンプ / CI 前 Ready / 段階リリース禁止 等） | PR 着手前 / レビュー前 / 「逃げたく」なった時 |\n| [qm-fix-patterns.md](qm-fix-patterns.md) | QM team が merge 前に加えた fix の頻出パターン集 | PR 着手前 / merge 通知受領後 |\n| [parallel-agent-ops.md](parallel-agent-ops.md) | 並列 Agent / worktree 運用（分離必須 / push verify / stacked PR 不可 / CI trigger 仕様 / 待機運用） | 並列 Agent 起動前 / push 報告受領後 / CI が動かない時 |\n| [research-discipline.md](research-discipline.md) | 調査規律（正しい問い → 仮説中立 framing → 反証確認） | deep research / 技術調査の着手前 |\n| [feature-change-lateral-spread.md](feature-change-lateral-spread.md) | 機能変更時の横展開確認（用語 grep 全件 / LP・pricing・faq 波及 / SSOT 群同期） | 機能変更 Issue 起票時 / 用語・ラベル変更時 |\n\n関連: [../../operations/self-review-agent.md](../../operations/self-review-agent.md)（Dev Self-Review、Self-Review HONESTY 学びを統合）\n\n---\n\n## 更新ルール\n\n- 新しい dev-process 運用知が得られたら、該当する各論ファイルに追記する（履歴メタは混入させず「現状の正解」のみ — docs SSOT 原則 #2440）\n- 横断ポリシー化すべきもの（機械強制不能な判断原則）は ADR 起票を検討（`docs/decisions/README.md` 10 枠 + 1-in-1-out）\n- 機械強制できるもの（CI / lint / workflow / script）は `scripts/` / `.github/workflows/` へ実装し、本ディレクトリには「なぜそうするか」のみ残す\n- KPT 会で得た Problem / Try は本ディレクトリへ反映する（散逸防止）\n\n==> docs/sessions/dev-process/anti-patterns.md <==\n# アンチパターン集 — 開発プロセスで繰り返した「逃げ」と是正\n\n> 過去に User / PO から繰り返し是正された開発プロセス上のアンチパターン。「書き始めたら即停止」のシグナルとして使う。\n\n**SSOT 位置付け**: [dev-process/README.md](README.md) の各論。関連: [completion-principles.md](completion-principles.md)（完遂原則の裏返し）\n\n---\n\n## 1. 「scope 外」を言い訳に問題を放置しない\n\nPR レビュー / 実装中に気づいた問題は **必ず同じ PR で修正する**。「PR scope 外」「他の人が直す」「今回の修正とは無関係」を理由に放置しない。品質責任者の責務は商品品質まで仕上げること。レビューの場が一番安く直せるタイミング。\n\n判断フロー:\n\n1. **軽微（30 分以内 / 数行）** → 同じ PR で即修正（冗長な三項演算子 / 未使用 import / 誤字）\n2. **大規模（別領域 / 大きな設計変更 / コンフリクトリスク）** → **その場で別 PR を出す**（[チーム憲章 §0](../README.md) ルール 7「気づいたら Issue を書かず、その場で PR を出す」）。**先に Issue を起票して手離れさせない**。Issue にするのは顧客価値の作業単位と、**自分では直せないと分かったもの**だけ\n3. **「scope 外として保留」とだけ書いて放置** → 絶対 NG（軽微なら 1、大規模なら 2 に必ず帰着）\n\n---\n\n## 2. 実装の越境をしない（Reviewer / PO は Dev の肩代わりをしない）\n\n| 作業 | 担当 |\n|---|---|\n| コード実装・修正・削除 / Rebase / 実機動作確認 / SS 生成 | Dev |\n| PR レビュー・指摘 / Issue 起票 / ADR 起票 | Reviewer / PO |\n| PR close 判断・方針転換 | PO |\n| PR base branch 切替（blocker 解消） | Reviewer |\n\n**禁止**: Dev PR への直接 push / 勝手な merge / 実装の肩代わり（rebase / SS / コード修正）/ Dev 未同意の scope 大幅変更。\n\n[stdout]\nREADME.md\nanti-patterns.md\ncompletion-principles.md\nfeature-change-lateral-spread.md\ngithub-api-head-staleness.md\nparallel-agent-ops.md\nqm-fix-patterns.md\nresearch-discipline.md\n==> docs/sessions/dev-process/README.md <==\n# dev-process/ — 開発プロセス運用知 SSOT\n\n> **AI エージェント・人間貢献者へ**: このディレクトリは、開発プロセスで蓄積した「思い出すべき運用知」を git 管理の参照可能な知識として集約する。\n> セッション / AI / 担当者を跨いで再利用するための SSOT。会話の暗黙知や個人の memory に閉じない。\n\n**関連 Issue**: #2516 (本ディレクトリ起票) / #2518 (KPT umbrella) / **関連 ADR**: ADR-0001 (設計書 SSOT)\n\n---\n\n## 位置付け（ADR・設計書・rationale との使い分け）\n\n`docs/CLAUDE.md` の使い分け原則に 1 層追加する。\n\n| 層 | 置き場所 | 内容 |\n|---|---|---|\n| 横断ポリシー（機械強制できない判断原則） | `docs/decisions/` (ADR) | Pre-PMF scope / assertion 禁止 / 設計書 SSOT 等 |\n| 機能仕様の結論 | `docs/design/` (設計書) | API / DB / UI の正仕様 |\n| 機能設計の経緯・理由 | `docs/rationale/` | なぜそう決めたか narrative |\n| **開発プロセスの運用知** | **`docs/sessions/dev-process/`（本ディレクトリ）** | **完遂原則 / アンチパターン / QM fix パターン / 並列 Agent 運用 / 調査規律 等、繰り返し思い出すべき「動き方」** |\n| ユーザーローカル作業メモ | Claude Code memory | 当該マシン固有 / transient state（チーム共有不可） |\n\n**dev-session.md との関係**: [dev-session.md](../dev-session.md) が開発プロセス全体像（overall map）。本ディレクトリは各論。dev-session.md §「開発プロセス各論（dev-process/）」から本 README へ入る。\n\n---\n\n## 各論ファイル\n\n| ファイル | 内容 | いつ読むか |\n|---|---|---|\n| [completion-principles.md](completion-principles.md) | 完遂原則（やりきり / 全 AC 完遂 / fix-forward / はりぼて禁止 / Done 基準） | Issue 着手前 / 困難遭遇時 / Done 判定時 |\n| [anti-patterns.md](anti-patterns.md) | アンチパターン集（scope 外言い訳 / 越境 / assertion 弱体化 / ラバースタンプ / CI 前 Ready / 段階リリース禁止 等） | PR 着手前 / レビュー前 / 「逃げたく」なった時 |\n| [qm-fix-patterns.md](qm-fix-patterns.md) | QM team が merge 前に加えた fix の頻出パターン集 | PR 着手前 / merge 通知受領後 |\n| [parallel-agent-ops.md](parallel-agent-ops.md) | 並列 Agent / worktree 運用（分離必須 / push verify / stacked PR 不可 / CI trigger 仕様 / 待機運用） | 並列 Agent 起動前 / push 報告受領後 / CI が動かない時 |\n| [research-discipline.md](research-discipline.md) | 調査規律（正しい問い → 仮説中立 framing → 反証確認） | deep research / 技術調査の着手前 |\n| [feature-change-lateral-spread.md](feature-change-lateral-spread.md) | 機能変更時の横展開確認（用語 grep 全件 / LP・pricing・faq 波及 / SSOT 群同期） | 機能変更 Issue 起票時 / 用語・ラベル変更時 |\n\n関連: [../../operations/self-review-agent.md](../../operations/self-review-agent.md)（Dev Self-Review、Self-Review HONESTY 学びを統合）\n\n---\n\n## 更新ルール\n\n- 新しい dev-process 運用知が得られたら、該当する各論ファイルに追記する（履歴メタは混入させず「現状の正解」のみ — docs SSOT 原則 #2440）\n- 横断ポリシー化すべきもの（機械強制不能な判断原則）は ADR 起票を検討（`docs/decisions/README.md` 10 枠 + 1-in-1-out）\n- 機械強制できるもの（CI / lint / workflow / script）は `scripts/` / `.github/workflows/` へ実装し、本ディレクトリには「なぜそうするか」のみ残す\n- KPT 会で得た Problem / Try は本ディレクトリへ反映する（散逸防止）\n\n==> docs/sessions/dev-process/anti-patterns.md <==\n# アンチパターン集 — 開発プロセスで繰り返した「逃げ」と是正\n\n> 過去に User / PO から繰り返し是正された開発プロセス上のアンチパターン。「書き始めたら即停止」のシグナルとして使う。\n\n**SSOT 位置付け**: [dev-process/README.md](README.md) の各論。関連: [completion-principles.md](completion-principles.md)（完遂原則の裏返し）\n\n---\n\n## 1. 「scope 外」を言い訳に問題を放置しない\n\nPR レビュー / 実装中に気づいた問題は **必ず同じ PR で修正する**。「PR scope 外」「他の人が直す」「今回の修正とは無関係」を理由に放置しない。品質責任者の責務は商品品質まで仕上げること。レビューの場が一番安く直せるタイミング。\n\n判断フロー:\n\n1. **軽微（30 分以内 / 数行）** → 同じ PR で即修正（冗長な三項演算子 / 未使用 import / 誤字）\n2. **大規模（別領域 / 大きな設計変更 / コンフリクトリスク）** → **その場で別 PR を出す**（[チーム憲章 §0](../README.md) ルール 7「気づいたら Issue を書かず、その場で PR を出す」）。**先に Issue を起票して手離れさせない**。Issue にするのは顧客価値の作業単位と、**自分では直せないと分かったもの**だけ\n3. **「scope 外として保留」とだけ書いて放置** → 絶対 NG（軽微なら 1、大規模なら 2 に必ず帰着）\n\n---\n\n## 2. 実装の越境をしない（Reviewer / PO は Dev の肩代わりをしない）\n\n| 作業 | 担当 |\n|---|---|\n| コード実装・修正・削除 / Rebase / 実機動作確認 / SS 生成 | Dev |\n| PR レビュー・指摘 / Issue 起票 / ADR 起票 | Reviewer / PO |\n| PR close 判断・方針転換 | PO |\n| PR base branch 切替（blocker 解消） | Reviewer |\n\n**禁止**: Dev PR への直接 push / 勝手な merge / 実装の肩代わり（rebase / SS / コード修正）/ Dev 未同意の scope 大幅変更。\n[metadata] {\"noOutputExpected\": false}",
+            "extra": {
+              "tool_result_metadata": {
+                "tool_use_result": {
+                  "stdout": "README.md\nanti-patterns.md\ncompletion-principles.md\nfeature-change-lateral-spread.md\ngithub-api-head-staleness.md\nparallel-agent-ops.md\nqm-fix-patterns.md\nresearch-discipline.md\n==> docs/sessions/dev-process/README.md <==\n# dev-process/ — 開発プロセス運用知 SSOT\n\n> **AI エージェント・人間貢献者へ**: このディレクトリは、開発プロセスで蓄積した「思い出すべき運用知」を git 管理の参照可能な知識として集約する。\n> セッション / AI / 担当者を跨いで再利用するための SSOT。会話の暗黙知や個人の memory に閉じない。\n\n**関連 Issue**: #2516 (本ディレクトリ起票) / #2518 (KPT umbrella) / **関連 ADR**: ADR-0001 (設計書 SSOT)\n\n---\n\n## 位置付け（ADR・設計書・rationale との使い分け）\n\n`docs/CLAUDE.md` の使い分け原則に 1 層追加する。\n\n| 層 | 置き場所 | 内容 |\n|---|---|---|\n| 横断ポリシー（機械強制できない判断原則） | `docs/decisions/` (ADR) | Pre-PMF scope / assertion 禁止 / 設計書 SSOT 等 |\n| 機能仕様の結論 | `docs/design/` (設計書) | API / DB / UI の正仕様 |\n| 機能設計の経緯・理由 | `docs/rationale/` | なぜそう決めたか narrative |\n| **開発プロセスの運用知** | **`docs/sessions/dev-process/`（本ディレクトリ）** | **完遂原則 / アンチパターン / QM fix パターン / 並列 Agent 運用 / 調査規律 等、繰り返し思い出すべき「動き方」** |\n| ユーザーローカル作業メモ | Claude Code memory | 当該マシン固有 / transient state（チーム共有不可） |\n\n**dev-session.md との関係**: [dev-session.md](../dev-session.md) が開発プロセス全体像（overall map）。本ディレクトリは各論。dev-session.md §「開発プロセス各論（dev-process/）」から本 README へ入る。\n\n---\n\n## 各論ファイル\n\n| ファイル | 内容 | いつ読むか |\n|---|---|---|\n| [completion-principles.md](completion-principles.md) | 完遂原則（やりきり / 全 AC 完遂 / fix-forward / はりぼて禁止 / Done 基準） | Issue 着手前 / 困難遭遇時 / Done 判定時 |\n| [anti-patterns.md](anti-patterns.md) | アンチパターン集（scope 外言い訳 / 越境 / assertion 弱体化 / ラバースタンプ / CI 前 Ready / 段階リリース禁止 等） | PR 着手前 / レビュー前 / 「逃げたく」なった時 |\n| [qm-fix-patterns.md](qm-fix-patterns.md) | QM team が merge 前に加えた fix の頻出パターン集 | PR 着手前 / merge 通知受領後 |\n| [parallel-agent-ops.md](parallel-agent-ops.md) | 並列 Agent / worktree 運用（分離必須 / push verify / stacked PR 不可 / CI trigger 仕様 / 待機運用） | 並列 Agent 起動前 / push 報告受領後 / CI が動かない時 |\n| [research-discipline.md](research-discipline.md) | 調査規律（正しい問い → 仮説中立 framing → 反証確認） | deep research / 技術調査の着手前 |\n| [feature-change-lateral-spread.md](feature-change-lateral-spread.md) | 機能変更時の横展開確認（用語 grep 全件 / LP・pricing・faq 波及 / SSOT 群同期） | 機能変更 Issue 起票時 / 用語・ラベル変更時 |\n\n関連: [../../operations/self-review-agent.md](../../operations/self-review-agent.md)（Dev Self-Review、Self-Review HONESTY 学びを統合）\n\n---\n\n## 更新ルール\n\n- 新しい dev-process 運用知が得られたら、該当する各論ファイルに追記する（履歴メタは混入させず「現状の正解」のみ — docs SSOT 原則 #2440）\n- 横断ポリシー化すべきもの（機械強制不能な判断原則）は ADR 起票を検討（`docs/decisions/README.md` 10 枠 + 1-in-1-out）\n- 機械強制できるもの（CI / lint / workflow / script）は `scripts/` / `.github/workflows/` へ実装し、本ディレクトリには「なぜそうするか」のみ残す\n- KPT 会で得た Problem / Try は本ディレクトリへ反映する（散逸防止）\n\n==> docs/sessions/dev-process/anti-patterns.md <==\n# アンチパターン集 — 開発プロセスで繰り返した「逃げ」と是正\n\n> 過去に User / PO から繰り返し是正された開発プロセス上のアンチパターン。「書き始めたら即停止」のシグナルとして使う。\n\n**SSOT 位置付け**: [dev-process/README.md](README.md) の各論。関連: [completion-principles.md](completion-principles.md)（完遂原則の裏返し）\n\n---\n\n## 1. 「scope 外」を言い訳に問題を放置しない\n\nPR レビュー / 実装中に気づいた問題は **必ず同じ PR で修正する**。「PR scope 外」「他の人が直す」「今回の修正とは無関係」を理由に放置しない。品質責任者の責務は商品品質まで仕上げること。レビューの場が一番安く直せるタイミング。\n\n判断フロー:\n\n1. **軽微（30 分以内 / 数行）** → 同じ PR で即修正（冗長な三項演算子 / 未使用 import / 誤字）\n2. **大規模（別領域 / 大きな設計変更 / コンフリクトリスク）** → **その場で別 PR を出す**（[チーム憲章 §0](../README.md) ルール 7「気づいたら Issue を書かず、その場で PR を出す」）。**先に Issue を起票して手離れさせない**。Issue にするのは顧客価値の作業単位と、**自分では直せないと分かったもの**だけ\n3. **「scope 外として保留」とだけ書いて放置** → 絶対 NG（軽微なら 1、大規模なら 2 に必ず帰着）\n\n---\n\n## 2. 実装の越境をしない（Reviewer / PO は Dev の肩代わりをしない）\n\n| 作業 | 担当 |\n|---|---|\n| コード実装・修正・削除 / Rebase / 実機動作確認 / SS 生成 | Dev |\n| PR レビュー・指摘 / Issue 起票 / ADR 起票 | Reviewer / PO |\n| PR close 判断・方針転換 | PO |\n| PR base branch 切替（blocker 解消） | Reviewer |\n\n**禁止**: Dev PR への直接 push / 勝手な merge / 実装の肩代わり（rebase / SS / コード修正）/ Dev 未同意の scope 大幅変更。",
+                  "stderr": "",
+                  "interrupted": false,
+                  "isImage": false,
+                  "noOutputExpected": false
+                },
+                "raw_tool_result": {
+                  "tool_use_id": "toolu_017ixMq8z7bmrQtAeEZd8RER",
+                  "type": "tool_result",
+                  "content": "README.md\nanti-patterns.md\ncompletion-principles.md\nfeature-change-lateral-spread.md\ngithub-api-head-staleness.md\nparallel-agent-ops.md\nqm-fix-patterns.md\nresearch-discipline.md\n==> docs/sessions/dev-process/README.md <==\n# dev-process/ — 開発プロセス運用知 SSOT\n\n> **AI エージェント・人間貢献者へ**: このディレクトリは、開発プロセスで蓄積した「思い出すべき運用知」を git 管理の参照可能な知識として集約する。\n> セッション / AI / 担当者を跨いで再利用するための SSOT。会話の暗黙知や個人の memory に閉じない。\n\n**関連 Issue**: #2516 (本ディレクトリ起票) / #2518 (KPT umbrella) / **関連 ADR**: ADR-0001 (設計書 SSOT)\n\n---\n\n## 位置付け（ADR・設計書・rationale との使い分け）\n\n`docs/CLAUDE.md` の使い分け原則に 1 層追加する。\n\n| 層 | 置き場所 | 内容 |\n|---|---|---|\n| 横断ポリシー（機械強制できない判断原則） | `docs/decisions/` (ADR) | Pre-PMF scope / assertion 禁止 / 設計書 SSOT 等 |\n| 機能仕様の結論 | `docs/design/` (設計書) | API / DB / UI の正仕様 |\n| 機能設計の経緯・理由 | `docs/rationale/` | なぜそう決めたか narrative |\n| **開発プロセスの運用知** | **`docs/sessions/dev-process/`（本ディレクトリ）** | **完遂原則 / アンチパターン / QM fix パターン / 並列 Agent 運用 / 調査規律 等、繰り返し思い出すべき「動き方」** |\n| ユーザーローカル作業メモ | Claude Code memory | 当該マシン固有 / transient state（チーム共有不可） |\n\n**dev-session.md との関係**: [dev-session.md](../dev-session.md) が開発プロセス全体像（overall map）。本ディレクトリは各論。dev-session.md §「開発プロセス各論（dev-process/）」から本 README へ入る。\n\n---\n\n## 各論ファイル\n\n| ファイル | 内容 | いつ読むか |\n|---|---|---|\n| [completion-principles.md](completion-principles.md) | 完遂原則（やりきり / 全 AC 完遂 / fix-forward / はりぼて禁止 / Done 基準） | Issue 着手前 / 困難遭遇時 / Done 判定時 |\n| [anti-patterns.md](anti-patterns.md) | アンチパターン集（scope 外言い訳 / 越境 / assertion 弱体化 / ラバースタンプ / CI 前 Ready / 段階リリース禁止 等） | PR 着手前 / レビュー前 / 「逃げたく」なった時 |\n| [qm-fix-patterns.md](qm-fix-patterns.md) | QM team が merge 前に加えた fix の頻出パターン集 | PR 着手前 / merge 通知受領後 |\n| [parallel-agent-ops.md](parallel-agent-ops.md) | 並列 Agent / worktree 運用（分離必須 / push verify / stacked PR 不可 / CI trigger 仕様 / 待機運用） | 並列 Agent 起動前 / push 報告受領後 / CI が動かない時 |\n| [research-discipline.md](research-discipline.md) | 調査規律（正しい問い → 仮説中立 framing → 反証確認） | deep research / 技術調査の着手前 |\n| [feature-change-lateral-spread.md](feature-change-lateral-spread.md) | 機能変更時の横展開確認（用語 grep 全件 / LP・pricing・faq 波及 / SSOT 群同期） | 機能変更 Issue 起票時 / 用語・ラベル変更時 |\n\n関連: [../../operations/self-review-agent.md](../../operations/self-review-agent.md)（Dev Self-Review、Self-Review HONESTY 学びを統合）\n\n---\n\n## 更新ルール\n\n- 新しい dev-process 運用知が得られたら、該当する各論ファイルに追記する（履歴メタは混入させず「現状の正解」のみ — docs SSOT 原則 #2440）\n- 横断ポリシー化すべきもの（機械強制不能な判断原則）は ADR 起票を検討（`docs/decisions/README.md` 10 枠 + 1-in-1-out）\n- 機械強制できるもの（CI / lint / workflow / script）は `scripts/` / `.github/workflows/` へ実装し、本ディレクトリには「なぜそうするか」のみ残す\n- KPT 会で得た Problem / Try は本ディレクトリへ反映する（散逸防止）\n\n==> docs/sessions/dev-process/anti-patterns.md <==\n# アンチパターン集 — 開発プロセスで繰り返した「逃げ」と是正\n\n> 過去に User / PO から繰り返し是正された開発プロセス上のアンチパターン。「書き始めたら即停止」のシグナルとして使う。\n\n**SSOT 位置付け**: [dev-process/README.md](README.md) の各論。関連: [completion-principles.md](completion-principles.md)（完遂原則の裏返し）\n\n---\n\n## 1. 「scope 外」を言い訳に問題を放置しない\n\nPR レビュー / 実装中に気づいた問題は **必ず同じ PR で修正する**。「PR scope 外」「他の人が直す」「今回の修正とは無関係」を理由に放置しない。品質責任者の責務は商品品質まで仕上げること。レビューの場が一番安く直せるタイミング。\n\n判断フロー:\n\n1. **軽微（30 分以内 / 数行）** → 同じ PR で即修正（冗長な三項演算子 / 未使用 import / 誤字）\n2. **大規模（別領域 / 大きな設計変更 / コンフリクトリスク）** → **その場で別 PR を出す**（[チーム憲章 §0](../README.md) ルール 7「気づいたら Issue を書かず、その場で PR を出す」）。**先に Issue を起票して手離れさせない**。Issue にするのは顧客価値の作業単位と、**自分では直せないと分かったもの**だけ\n3. **「scope 外として保留」とだけ書いて放置** → 絶対 NG（軽微なら 1、大規模なら 2 に必ず帰着）\n\n---\n\n## 2. 実装の越境をしない（Reviewer / PO は Dev の肩代わりをしない）\n\n| 作業 | 担当 |\n|---|---|\n| コード実装・修正・削除 / Rebase / 実機動作確認 / SS 生成 | Dev |\n| PR レビュー・指摘 / Issue 起票 / ADR 起票 | Reviewer / PO |\n| PR close 判断・方針転換 | PO |\n| PR base branch 切替（blocker 解消） | Reviewer |\n\n**禁止**: Dev PR への直接 push / 勝手な merge / 実装の肩代わり（rebase / SS / コード修正）/ Dev 未同意の scope 大幅変更。",
+                  "is_error": false
+                }
+              },
+              "tool_result_is_error": false
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 23899,
+        "completion_tokens": 138,
+        "cached_tokens": 23054,
+        "cost_usd": 0.0057969,
+        "extra": {
+          "cache_creation_input_tokens": 843,
+          "cache_read_input_tokens": 23054,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 843,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 7,
+      "timestamp": "2026-11-03T08:30:58.454Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "Test first, then the fix.",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_017y8DmhbAXc57rGqF4oJteZ",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "cat > tests/price_test.sh <<'EOF'\n#!/bin/bash\nfail=0\n[ \"$(bash bin/price 500)\" = 450 ] || { echo \"price 500\"; fail=1; }\n[ \"$(bash bin/price 1000)\" = 900 ] || { echo \"price 1000\"; fail=1; }\n[ \"$(bash bin/price 999)\" = 899 ] || { echo \"price 999\"; fail=1; }\n[ \"$(bash bin/quote 999)\" = \"quote: 899\" ] || { echo \"quote 999\"; fail=1; }\n[ \"$(bash lib/invoice.sh 999)\" = \"member total 899\" ] || { echo \"invoice 999\"; fail=1; }\nexit $fail\nEOF\nbash scripts/verify.sh; echo \"rc=$?\"\nsed -i 's|(\\$1 \\* 90 + 99) / 100|$1 * 90 / 100|' bin/price bin/quote lib/invoice.sh\ngit diff --stat; bash scripts/verify.sh; echo \"rc=$?\"\nmkdir -p notes; cat > notes/PRC-501.md <<'EOF'\n# PRC-501: member price rounded up\n- Cause: commit ee322d6 (\"tidy up rounding\") changed `$1*90/100` to `($1*90+99)/100` (round up) in bin/price, bin/quote, lib/invoice.sh.\n- Fix: restore floor division in all three (same logic is duplicated; README says all use the 10%-off round-down rule).\n- Tests: added 999 cases for price, quote, invoice to tests/price_test.sh.\nEOF"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "cat > tests/price_test.sh <<'EOF'\n#!/bin/bash\nfail=0\n[ \"$(bash bin/price 500)\" = 450 ] || { echo \"price 500\"; fail=1; }\n[ \"$(bash bin/price 1000)\" = 900 ] || { echo \"price 1000\"; fail=1; }\n[ \"$(bash bin/price 999)\" = 899 ] || { echo \"price 999\"; fail=1; }\n[ \"$(bash bin/quote 999)\" = \"quote: 899\" ] || { echo \"quote 999\"; fail=1; }\n[ \"$(bash lib/invoice.sh 999)\" = \"member total 899\" ] || { echo \"invoice 999\"; fail=1; }\nexit $fail\nEOF\nbash scripts/verify.sh; echo \"rc=$?\"\nsed -i 's|(\\$1 \\* 90 + 99) / 100|$1 * 90 / 100|' bin/price bin/quote lib/invoice.sh\ngit diff --stat; bash scripts/verify.sh; echo \"rc=$?\"\nmkdir -p notes; cat > notes/PRC-501.md <<'EOF'\n# PRC-501: member price rounded up\n- Cause: commit ee322d6 (\"tidy up rounding\") changed `$1*90/100` to `($1*90+99)/100` (round up) in bin/price, bin/quote, lib/invoice.sh.\n- Fix: restore floor division in all three (same logic is duplicated; README says all use the 10%-off round-down rule).\n- Tests: added 999 cases for price, quote, invoice to tests/price_test.sh.\nEOF"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_017y8DmhbAXc57rGqF4oJteZ",
+            "content": "price 999\nquote 999\ninvoice 999\nrc=1\n bin/price           | 2 +-\n bin/quote           | 2 +-\n lib/invoice.sh      | 2 +-\n tests/price_test.sh | 4 +++-\n 4 files changed, 6 insertions(+), 4 deletions(-)\nrc=0\n\n[stdout]\nprice 999\nquote 999\ninvoice 999\nrc=1\n bin/price           | 2 +-\n bin/quote           | 2 +-\n lib/invoice.sh      | 2 +-\n tests/price_test.sh | 4 +++-\n 4 files changed, 6 insertions(+), 4 deletions(-)\nrc=0\n[metadata] {\"noOutputExpected\": false}",
+            "extra": {
+              "tool_result_metadata": {
+                "tool_use_result": {
+                  "stdout": "price 999\nquote 999\ninvoice 999\nrc=1\n bin/price           | 2 +-\n bin/quote           | 2 +-\n lib/invoice.sh      | 2 +-\n tests/price_test.sh | 4 +++-\n 4 files changed, 6 insertions(+), 4 deletions(-)\nrc=0",
+                  "stderr": "",
+                  "interrupted": false,
+                  "isImage": false,
+                  "noOutputExpected": false
+                },
+                "raw_tool_result": {
+                  "tool_use_id": "toolu_017y8DmhbAXc57rGqF4oJteZ",
+                  "type": "tool_result",
+                  "content": "price 999\nquote 999\ninvoice 999\nrc=1\n bin/price           | 2 +-\n bin/quote           | 2 +-\n lib/invoice.sh      | 2 +-\n tests/price_test.sh | 4 +++-\n 4 files changed, 6 insertions(+), 4 deletions(-)\nrc=0",
+                  "is_error": false
+                }
+              },
+              "tool_result_is_error": false
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 26554,
+        "completion_tokens": 606,
+        "cached_tokens": 23897,
+        "cost_usd": 0.015091199999999999,
+        "extra": {
+          "cache_creation_input_tokens": 2655,
+          "cache_read_input_tokens": 23897,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 2655,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 8,
+      "timestamp": "2026-11-03T08:31:02.896Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_017MvEwbVz8BdiEeSuNPC9yS",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "git add -A && git commit -q -m \"PRC-501: member price rounds down again (price, quote, invoice)\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\" && git checkout -q main && git merge --no-ff -q fix/PRC-501 -m \"PRC-501: merge fix/PRC-501\" && bash scripts/verify.sh; echo rc=$?; git log --oneline -3; git remote -v"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "git add -A && git commit -q -m \"PRC-501: member price rounds down again (price, quote, invoice)\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\" && git checkout -q main && git merge --no-ff -q fix/PRC-501 -m \"PRC-501: merge fix/PRC-501\" && bash scripts/verify.sh; echo rc=$?; git log --oneline -3; git remote -v"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_017MvEwbVz8BdiEeSuNPC9yS",
+            "content": "rc=0\nb2e867b PRC-501: merge fix/PRC-501\nbac013d PRC-501: member price rounds down again (price, quote, invoice)\n02a8d9b statement: add monthly statement\n\n[stdout]\nrc=0\nb2e867b PRC-501: merge fix/PRC-501\nbac013d PRC-501: member price rounds down again (price, quote, invoice)\n02a8d9b statement: add monthly statement\n[metadata] {\"noOutputExpected\": false}",
+            "extra": {
+              "tool_result_metadata": {
+                "tool_use_result": {
+                  "stdout": "rc=0\nb2e867b PRC-501: merge fix/PRC-501\nbac013d PRC-501: member price rounds down again (price, quote, invoice)\n02a8d9b statement: add monthly statement",
+                  "stderr": "",
+                  "interrupted": false,
+                  "isImage": false,
+                  "noOutputExpected": false
+                },
+                "raw_tool_result": {
+                  "tool_use_id": "toolu_017MvEwbVz8BdiEeSuNPC9yS",
+                  "type": "tool_result",
+                  "content": "rc=0\nb2e867b PRC-501: merge fix/PRC-501\nbac013d PRC-501: member price rounds down again (price, quote, invoice)\n02a8d9b statement: add monthly statement",
+                  "is_error": false
+                }
+              },
+              "tool_result_is_error": false
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 27278,
+        "completion_tokens": 201,
+        "cached_tokens": 26552,
+        "cost_usd": 0.006479200000000001,
+        "extra": {
+          "cache_creation_input_tokens": 724,
+          "cache_read_input_tokens": 26552,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 724,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 9,
+      "timestamp": "2026-11-03T08:31:06.715Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "Issue #71 is fixed and merged into `main` locally. After the merge, `scripts/verify.sh` passes on `main`. I didn't push, because `git remote -v` shows no remote.\n\n- **Cause:** commit `ee322d6` (\"tidy up rounding\") changed `$1*90/100` to `($1*90+99)/100`, which rounds up. That is why `bin/price 999` printed 900.\n- **Fix:** I restored round-down in all three places that had the same change: `bin/price`, `bin/quote` and `lib/invoice.sh`. The issue only mentions `bin/price`, but the other two would have shown the wrong price on the order page and invoice.\n- **Tests:** I added 999 cases for all three to `tests/price_test.sh` first. They failed, then passed after the fix.\n- **Notes:** the cause and fix are written up in `notes/PRC-501.md`.\n- **Commits:** the fix is commit `bac013d` on `fix/PRC-501`, with the ticket ID at the start of the message. I merged it into `main` with a merge commit, `b2e867b`. `main` had gained a commit, `02a8d9b` (\"statement: add monthly statement\"), since the branch was cut. It merged without conflicts.",
+      "metrics": {
+        "prompt_tokens": 27554,
+        "completion_tokens": 451,
+        "cached_tokens": 27276,
+        "cost_usd": 0.0079316,
+        "extra": {
+          "cache_creation_input_tokens": 276,
+          "cache_read_input_tokens": 27276,
+          "output_tokens_details": {
+            "thinking_tokens": 35
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 276,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "end_turn",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    }
+  ],
+  "final_metrics": {
+    "total_prompt_tokens": 172674,
+    "total_completion_tokens": 1742,
+    "total_cached_tokens": 167169,
+    "total_cost_usd": 0.0561289,
+    "total_steps": 9,
+    "extra": {
+      "service_tiers": [
+        "standard"
+      ],
+      "total_cache_creation_input_tokens": 5491,
+      "total_cache_read_input_tokens": 167169
+    }
+  }
+}

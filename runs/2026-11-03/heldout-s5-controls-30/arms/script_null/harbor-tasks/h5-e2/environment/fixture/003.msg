@@ -1,0 +1,1 @@
+locales: French (first batch)

@@ -1,0 +1,1 @@
+uptime-pct: rename locals

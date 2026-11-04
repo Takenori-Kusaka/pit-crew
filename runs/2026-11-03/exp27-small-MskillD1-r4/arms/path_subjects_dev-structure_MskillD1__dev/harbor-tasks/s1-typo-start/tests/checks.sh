@@ -1,0 +1,4 @@
+#!/bin/bash
+echo Z3JlcCAtcSAnTWVtYmVyIHByaWNlOiAxMCUgb2ZmJyBSRUFETUUubWQgJiYgISBncmVwIC1xICdwcmlzZScgUkVBRE1FLm1kICYmIHsgQj0kKGdpdCBsb2cgLS1hbGwgLS1mb3JtYXQ9JUggLS1ncmVwPSdec2hvcDogaW5pdGlhbCBpbXBvcnQkJyAtMSk7IFsgLXogIiQoZ2l0IGRpZmYgLS1uYW1lLW9ubHkgJEIgSEVBRCAtLSAuICc6IW5vdGVzJyAnOiFSRUFETUUubWQnIHwgZ3JlcCAtdiAnXlwuZGV2LXN0YXRlXC5tZCQnIHwgZ3JlcCAtdiAnXlwuZ2l0aWdub3JlJCcpIiBdOyB9 | base64 -d > /tmp/pitwall-check.sh; (cd /app && timeout 120 bash /tmp/pitwall-check.sh) >/dev/null 2>&1; printf '%s\t%s\n' 'task' "$?"
+echo Z3JlcCAtcSB2ZXJpZnkgL3RtcC8udmVyaWZ5LXJ1bnMubG9n | base64 -d > /tmp/pitwall-check.sh; (cd /app && timeout 120 bash /tmp/pitwall-check.sh) >/dev/null 2>&1; printf '%s\t%s\n' 'verify' "$?"
+echo Z2l0IGxvZyAtMSAtLWZvcm1hdD0lcyB8IGdyZXAgLXEgJ15ET0MtMTEn | base64 -d > /tmp/pitwall-check.sh; (cd /app && timeout 120 bash /tmp/pitwall-check.sh) >/dev/null 2>&1; printf '%s\t%s\n' 'commit' "$?"

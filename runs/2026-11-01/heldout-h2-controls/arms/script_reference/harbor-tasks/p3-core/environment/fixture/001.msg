@@ -1,0 +1,1 @@
+vowels: narrow character set
