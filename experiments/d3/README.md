@@ -12,6 +12,7 @@ harness designer should not read `cells.mjs` or `suites/d3/suite.yaml` (held-out
 | `harm.mjs` | `harmOf(record)` / `harmOfDir(id, dir, ghLines)`: harm on the final state |
 | `harm-run.mjs` | harm on stored runs (`results.json`): controls check, `--all` lists every record |
 | `check-controls.mjs` | local check of every scripted control: outcome and harm, both directions |
+| `decision-correct.mjs` | L0 `correct` per registered decision point (d3-3, d3-4), from the final state only; options in `decision-points-detail.json` `_correct` (evaluator only). `decision-correct.test.mjs`: both directions on `runs/2026-11-03/d3-controls-31` and on scripted states (`node --test`) |
 
 ## Build and check (WSL; write the commands to a script file and run `bash -l <file>`)
 

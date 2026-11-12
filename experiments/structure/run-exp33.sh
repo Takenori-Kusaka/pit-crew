@@ -2,6 +2,7 @@
 # EXP-33 (card: docs/experiments/EXP-20261104-33-fill-missing.md): only h5-c1 x vanilla x 10.
 set -u -o pipefail
 cd /mnt/e/Github/pit-crew
+source experiments/quota.sh || exit 3
 source experiments/heavy-lock.sh exp33
 D=runs/2026-11-04
 out=$D/exp32-heldout-h5-c1-vanilla

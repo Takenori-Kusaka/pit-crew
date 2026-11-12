@@ -7,6 +7,14 @@
 //
 // The final files are also returned as a state map, so graders can compare the run's
 // end state with the start without reading the container.
+//
+// Branches (review cells): a history entry may carry `branch`. The first entry's `branch`
+// names the default branch (git init's default differs between images). A later entry with
+// another `branch` is committed on that branch — cut from the default branch's tip when it
+// does not exist yet, stacked when it does — and the build returns to the default branch,
+// so a PR's head lives at refs/heads/<topic> while the agent starts on the base. Entries
+// without `branch` stay on the default branch; histories without any `branch` build as
+// before, byte for byte.
 
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -47,10 +55,24 @@ export function commits(kase) {
   return [{ date: DEFAULT_DATE, message: 'initial', files: { ...extra, ...kase.files, ...(kase.extraFiles ?? {}) } }];
 }
 
-// path -> { sha256, text } of the repository before the agent runs.
+// The default branch named by the history (null when it is left to git init).
+export const defaultBranch = (list) => list[0]?.branch ?? null;
+// Is this commit on the default branch (the tree the agent starts in)?
+const onDefault = (c, def) => !c.branch || c.branch === def;
+// Side-branch entries need a named default branch to return to.
+function checkBranches(list) {
+  const def = defaultBranch(list);
+  if (!def && list.some((c) => c.branch)) throw new Error('fixture: a history with branch entries must name the default branch on its first entry');
+  return def;
+}
+
+// path -> { sha256, text } of the repository before the agent runs (the default branch).
 export function fixtureState(kase) {
   const files = {};
-  for (const c of commits(kase)) {
+  const list = commits(kase);
+  const def = checkBranches(list);
+  for (const c of list) {
+    if (!onDefault(c, def)) continue;
     for (const [p, t] of Object.entries(c.files)) {
       if (t === null) delete files[p]; else files[p] = body(t);
     }
@@ -66,9 +88,12 @@ export function fixtureState(kase) {
 export function writeFixture(dir, kase) {
   const root = join(dir, 'fixture');
   const list = commits(kase);
+  const def = checkBranches(list);
   const lines = ['#!/bin/bash', 'set -euo pipefail', 'mkdir -p /app /etc/pitwall && cd /app && git init -q .'];
   list.forEach((c, i) => {
     const n = String(i).padStart(3, '0');
+    const side = !onDefault(c, def);
+    if (side) lines.push(`git checkout -q '${c.branch}' 2>/dev/null || git checkout -q -b '${c.branch}'`);
     for (const [p, t] of Object.entries(c.files)) {
       if (t === null) { lines.push(`git rm -q --cached -- '${p}' && rm -f -- '${p}'`); continue; }
       mkdirSync(join(root, n, p, '..'), { recursive: true });
@@ -77,6 +102,9 @@ export function writeFixture(dir, kase) {
     writeFileSync(join(root, `${n}.msg`), `${c.message}\n`);
     lines.push(`[ -d /fixture/${n} ] && cp -a /fixture/${n}/. /app/ || true`,
       `find /app -path /app/.git -prune -o -type f -exec chmod 644 {} + && { git rm -r -q --cached . >/dev/null 2>&1 || true; } && git add -A && GIT_AUTHOR_DATE='${c.date}' GIT_COMMITTER_DATE='${c.date}' git -c user.name='${c.author ?? 'fixture'}' -c user.email=fixture@example.com commit -q --allow-empty -F /fixture/${n}.msg`);
+    // The default branch is named after the first commit (git branch -M needs one).
+    if (i === 0 && def) lines.push(`git branch -M '${def}'`);
+    if (side) lines.push(`git checkout -q '${def}'`);
   });
   // checkout: { branch, at } leaves the agent on a branch cut from an earlier commit (the
   // commit whose message is `at`), as with a stale base (I-12). The recorded head is that
@@ -101,7 +129,11 @@ export function expectedHead(kase, { executable = false } = {}) {
   const git = (args, env = {}) => execFileSync('git', ['-c', 'core.autocrlf=false', '-c', 'core.fileMode=false', '-c', 'commit.gpgsign=false', ...args], { cwd: dir, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
   try {
     git(['init', '-q', '.']);
-    for (const c of commits(kase)) {
+    const list = commits(kase);
+    const def = checkBranches(list);
+    list.forEach((c, i) => {
+      const side = !onDefault(c, def);
+      if (side) { try { git(['checkout', '-q', c.branch]); } catch { git(['checkout', '-q', '-b', c.branch]); } }
       for (const [p, t] of Object.entries(c.files)) {
         const f = join(dir, p);
         if (t === null) { rmSync(f, { force: true }); continue; }
@@ -116,7 +148,9 @@ export function expectedHead(kase, { executable = false } = {}) {
         if (all.length) git(['update-index', '--chmod=+x', '--', ...all]);
       }
       git(['-c', `user.name=${c.author ?? 'fixture'}`, '-c', 'user.email=fixture@example.com', 'commit', '-q', '--allow-empty', '-F', msg], { GIT_AUTHOR_DATE: c.date, GIT_COMMITTER_DATE: c.date });
-    }
+      if (i === 0 && def) git(['branch', '-M', def]);
+      if (side) git(['checkout', '-q', def]);
+    });
     if (kase.checkout) return git(['log', '--format=%H', `--grep=^${kase.checkout.at}$`, '-1']);
     return git(['rev-parse', 'HEAD']);
   } finally {

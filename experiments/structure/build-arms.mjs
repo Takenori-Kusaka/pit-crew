@@ -85,7 +85,9 @@ const STATE_WHERE = '各工程の入る条件と出る条件は、このファ�
 // which Claude Code refused, and ended without a commit. The default skill says how instead.
 // EXP-26 delivery arms (see the arms section).
 const D1_NAV = '受け付けの後、実装の前に、必ず調査の工程のスキル（`dev-phase-1-research`）を呼ぶ。';
+const D2_NAV = '調査の後、実装の前に、必ず設計の工程のスキル（`dev-phase-2-design`）を呼び、判断の点があれば案を比べ、無ければ「自明」とその理由を 1 行書く。';
 const KEY_RULES = ['| | 2 | 土台を確かめる |', '- **1 つ見つけたら、同じ型を探す。'];
+const DESIGN_KEY = '| **S3 案を出す** |';
 const STATE_GIT ='`.dev-state.md` は commit しない。git から外すなら `.gitignore` に書き、`.git/` の中には書かない。';
 const entryExitOf = (phases) => '\n## 各工程の入る条件と出る条件\n\n' + phases.map((p) => [`### ${p.num} ${p.name}`, ...p.subs.filter((s) => ENTRY(s) || EXIT(s)).map(subText)].join('\n\n')).join('\n\n') + '\n';
 
@@ -162,6 +164,21 @@ export function build({ principles, phases, oneLiner }) {
   const mgCore = `${stateNav} ${STATE_GIT} 工程の手順は、工程ごとのスキル（\`dev-phase-1-research\` など、一覧の番号と対応）を Skill ツールで名前を指定して呼んで読む。`;
   arms.MskillD1 = { 'skills/dev/SKILL.md': core(`${mgCore} ${D1_NAV}`, entryExit) };
   for (const p of phases) arms.MskillD1[`skills/dev-phase-${slug(p)}/SKILL.md`] = arms.MskillG[`skills/dev-phase-${slug(p)}/SKILL.md`];
+  // EXP-39 (delivery of the design rule). EXP-32's exploratory E scoring found no "two or more
+  // options compared" in any arm, the default included: the design phase is optional on T1 and the
+  // core only mandates the investigation call. MskillD1N2 = MskillD1 + one more navigation
+  // sentence: call the design skill after the investigation and before implementing.
+  arms.MskillD1N2 = { ...arms.MskillD1, 'skills/dev/SKILL.md': core(`${mgCore} ${D1_NAV} ${D2_NAV}`, entryExit) };
+  // EXP-40: the design skill was called in only 10/30 v6 trials, so the key design rule (step S3)
+  // is moved from the design skill into the core, as MskillD2 did for the investigation rules.
+  const design = phases.find((p) => p.num === 2);
+  const designLines = phaseFile(design, { omit: (s) => ENTRY(s) || EXIT(s) }).split('\n');
+  const s3 = designLines.filter((l) => l.startsWith(DESIGN_KEY));
+  if (s3.length !== 1) throw new Error(`design key rule found ${s3.length}, expected 1`);
+  const designHeader = designLines.find((l) => l.startsWith('| 段 | # |'));
+  const designSection = `\n## 設計の規定のうち、実装の前に必ず守るもの\n\n${nav('次の規定は、設計の工程（dev-phase-2-design）の手順の一部で、ここに置いている。')}\n\n${designHeader}\n${designHeader.replace(/[^|]+/g, '---')}\n${s3[0]}\n`;
+  arms.MskillD1K2 = { ...arms.MskillD1N2, 'skills/dev/SKILL.md': core(`${mgCore} ${D1_NAV} ${D2_NAV}`, entryExit + designSection) };
+  arms.MskillD1K2[`skills/dev-phase-${slug(design)}/SKILL.md`] = arms.MskillD1N2[`skills/dev-phase-${slug(design)}/SKILL.md`].split('\n').filter((l) => !l.startsWith(DESIGN_KEY)).join('\n');
   const isKey = (l) => KEY_RULES.some((k) => l.startsWith(k));
   const research = phases.find((p) => p.num === 1);
   const keyLines = phaseFile(research, { omit: (s) => ENTRY(s) || EXIT(s) }).split('\n').filter(isKey);

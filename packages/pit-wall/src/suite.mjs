@@ -38,6 +38,8 @@ export function loadSuite(path) {
     trials: c.trials ?? DEFAULT_TRIALS[c.kind],
     // Plain-language guide shown to humans who label runs for judge calibration.
     labelGuide: c.label_guide ?? null,
+    // Where the cell and its truth came from (experiments/qm/README.md §Provenance); lint warns when absent.
+    provenance: c.provenance ?? null,
     ...buildCase(c.pattern, c.params ?? {}),
   }));
   return {

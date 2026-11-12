@@ -1,0 +1,497 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "f0cc5e48-e0a6-49ec-96f9-e1770cb27306",
+  "agent": {
+    "name": "claude-code",
+    "version": "2.1.316",
+    "model_name": "claude-sonnet-5-5",
+    "extra": {
+      "cwds": [
+        "/app"
+      ],
+      "git_branches": [
+        "develop"
+      ]
+    }
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "timestamp": "2026-11-04T12:45:01.455Z",
+      "source": "user",
+      "message": "<command-message>qm</command-message>\n<command-name>/qm</command-name>\n<command-args>PR #57 のレビューをお願いします（レーン: develop）。\n\nThe GitHub CLI (`gh`) is available and already authenticated for example/roombook.</command-args>",
+      "extra": {
+        "is_sidechain": false
+      }
+    },
+    {
+      "step_id": 2,
+      "timestamp": "2026-11-04T12:45:01.455Z",
+      "source": "user",
+      "message": "Base directory for this skill: /logs/agent/sessions/skills/qm\n\n# QM (Quality Manager) Session Skill\n\n## 役割\n\nganbari-quest の品質責任者（出荷判定者 / QM）。開発ラインから独立し、個別 PR の gate として\n「出してよいか」を判定する。**approve / merge は lead 本体の専権**であり subagent に委譲しない。\n\n**SSOT**: [docs/sessions/qm-session.md](../../../docs/sessions/qm-session.md) /\n[チーム憲章 §0](../../../docs/sessions/README.md) / [label-mailbox.md](../../../docs/sessions/label-mailbox.md) /\nADR-0022（作成者 ≠ 承認者）/ ADR-0056（adversarial evidence）\n\n## 1. 起動時: mailbox cron を 1 本作る\n\n```\nCronCreate(cron: \"23 * * * *\", recurring: true, prompt: <label-mailbox.md §4「QM セッション用」テンプレート>)\n```\n\n分は **23**（Dev=13 / PO=37 / Platform=43 / 監査=47 とずらす）。CronCreate はセッション内メモリのみで、\nClaude 終了で消え 7 日で失効する。次のセッションでもう一度作る。\n\n## 2. mailbox を polling する\n\n```bash\ngh issue list --label \"state:needs-qm\" --state open --json number,title --jq '.[]|\"QM宛 #\\(.number) \\(.title)\"'\ngh pr list  --label \"state:needs-qm\" --state open --json number,title --jq '.[]|\"QM宛PR #\\(.number) \\(.title)\"'\ngh pr list  --label \"state:dev-done\" --state open --json number,title --jq '.[]|\"レビュー待ち #\\(.number) \\(.title)\"'\ngh pr list  --label \"state:ready-to-merge\" --state open --json number,title,mergeStateStatus --jq '.[]|\"MERGE可 #\\(.number) [\\(.mergeStateStatus)] \\(.title)\"'\n```\n\n- **Issue と PR の両方を見る**。`gh pr list --label` は Issue を返さず、`gh issue list --label` は PR を返さない\n- `state:needs-qm` は**レビュー依頼とは限らない**（問い合わせ / 見解確認を含む）。用件は本文を読む\n- 自分が block した `state:qm-blocked` も自衛として polling し、block 時点の HEAD から動いていれば再レビューする\n\n## 3. レビューは 5 手順（1 Agent = 1 PR、手順スキップ・順序変更禁止）\n\n1. **Issue 照合** — AC 各項目を PR diff と 1 対 1 突合\n2. **SS 実視認** — PR body の画像を Read tool で実際に開き、1 枚ごと最低 1 行の具体所見\n3. **SS 欠落検知** — `.svelte` / `.css` / `site/**` を触っているのに画像 0 枚なら BLOCK\n4. **CI ステータス確認** — 下記 §4 の畳み込みで判定する\n5. **承認判断** — §5 / §6\n\n着手前に `git ls-remote origin refs/heads/<branch>` で authoritative HEAD を固定し、差分は\nthree-dot（`git diff $(git merge-base origin/<base> <head>) <head>`）で見る。two-dot は\n「削除した」と「まだ取り込んでいない」を区別しない。\n\n## 4. CI 判定 — `gh pr checks` の行数を数えない\n\n**`gh pr checks` は走った check しか出さない。** required なのに一度も起動しなかった context は\n行そのものが出ないため、**未起動 = 非 pass 行 0 = 緑**と読めてしまう。逆に再トリガ後は同じ context が\n複数世代残り、決着済みの古い FAILURE を今の赤と読み違える。\n\n**緑の判定は `statusCheckRollup` を context 単位に畳んでから行う**（同名は最新 timestamp を採用）:\n\n```bash\ngh pr view <N> --json statusCheckRollup --jq '\n  [.statusCheckRollup[] | {n:(.name//.context), c:(.conclusion//\"\"), s:(.status//\"\"), t:(.completedAt//.startedAt//\"\")}]\n  | group_by(.n) | map(sort_by(.t) | last)\n  | if length == 0 then \"NOT RUN: context 0 件 — 起動していない。緑ではない\"\n    else . as $all\n      | [$all[] | select(.c != \"SUCCESS\" and .c != \"SKIPPED\" and .c != \"NEUTRAL\")]\n      | if length == 0 then \"ALL GREEN (\\($all | length) context)\"\n        else .[] | \"\\(.n): \\(if .c == \"\" then .s else .c end)\" end\n    end'\n```\n\n- **空集合を緑と読まない。** context 0 件は **NOT RUN** であって緑ではない。`conclusion` が空のものも未完了\n- 緑のときは **context 総数**を同じ base の直近 merge 済み PR と比べる。極端に少なければ大半が起動していない\n- **最終的な可否は `mergeStateStatus`**（`CLEAN` を確認する）。`BLOCKED` のまま緑に見えるなら読み方が間違っている\n- **Draft PR を approve しない。** Draft では required が `skipping` になり、検査されていないのに緑に見える。\n  `gh pr view <N> --json isDraft` で `false` を確認する。`skipping` は pass ではない\n- 軽量レーン（→ develop）では e2e / a11y / storybook / visual regression の不発火は正常（統合 PR で集約検証）。\n  ただし **`unit-test` / `unit-test-merge` の skip は例外で、approve / Ready にしない**\n- **報告は「CI 個別行の実測」を先に書き、結論はその後に置く。**「BLOCK 3 類型に非該当」は CI 緑を含意しない\n\n## 5. BLOCK は 3 類型のみ\n\n| # | 類型 | 例 |\n|---|---|---|\n| ① | **顧客に実害がある** | データ不整合 / 課金の誤り / 認可の穴 / 日付境界のずれ / 画面が使えない |\n| ② | **証跡の真正性を弱める** | PR body の主張が HEAD に存在しない / SS の Before-After 偽装 / 実行していない検証を実行したと書く |\n| ③ | **不可逆** | 本番データ・課金・削除・DB スキーマに触れ、戻せない |\n\n- **gate の削除・warn 降格は PO 承認事項であって BLOCK 事由にしない。** gate を減らす PR は\n  「PO 承認があるか」だけを確認し、承認があれば内容の是非で BLOCK しない\n- **記録の不整合（body の書式 / チェックボックス / 表の体裁）は BLOCK しない** → **approve + コメント**に降格する。\n  降格の条件は「独立に実 diff を確認し、実害がないと確認できた場合のみ」\n- **follow-up は PR コメント止まりにし、Issue 化しない**（チーム憲章 §0 ルール 7）\n- **Dev に返すのは 2 つだけ**（§0 ルール 6） — ①実装方針の変更を伴うもの ②BLOCK 3 類型。\n  PR body の不備 / AC の書き方 / 軽微な test・lint は**自分のクローン内の subagent ループで直して merge する**（§0 ルール 2）\n\n### `po-decision:required` が付いている PR\n\n**`po-decision:required` を理由に merge を止めない**（§0 ルール 3）。ただし判断の材料は\n**2 か所を両方読む**。片方だけ見て merge した実例が #4517。\n\n1. **Issue 側の採択条件**（PO がどの条件で採択したか）\n2. **PR body の「PO 決裁ブリーフ」**（その条件を実装がどう満たしたか）\n\n## 6. approve & merge（lead 本体が実行 / subagent に委譲しない）\n\napprove の**直前に** adversarial evidence を生成して物理 verify する（ADR-0056。**TTL 30 分**）:\n\n```bash\nnode scripts/verify-adversarial-output.mjs --pr <N>   # tmp/adversarial-evidence/<pr>.json を検証\n```\n\nevidence verify を通ってから、account switch → approve → merge → 復帰を**不可分ブロック**として連続実行する:\n\n```bash\ngh auth switch --user ganbariquestsupport-lab\nGH_TOKEN=$(gh auth token --user ganbariquestsupport-lab) \\\n  gh api repos/Takenori-Kusaka/ganbari-quest/pulls/<N>/reviews -X POST -f event=APPROVE -f body=\"<5 手順の所見>\"\ngh pr view <N> --json mergeStateStatus     # CLEAN 確認\ngh pr merge <N> --squash --delete-branch   # 軽量レーン / hotfix\ngh auth switch --user Takenori-Kusaka\n```\n\n- **作成者 ≠ 承認者**（ADR-0022）。PR author が `ganbariquestsupport-lab` なら自分の PR は approve 不可 →\n  `Takenori-Kusaka` で approve → `ganbariquestsupport-lab` で merge\n- **`--admin` bypass は完全禁止**\n- 統合 PR（`release/*` → main）は **外部監査チーム担当で QM 対象外**。QM が main に関与するのは\n  緊急 fix / CI 環境構築の例外的 hotfix のみ（merge 後 develop への back-merge まで完了させる）\n\n## 7. label を付け替える（復路を必ず閉じる）\n\n| 判定 | 付ける label | 次に動く |\n|---|---|---|\n| BLOCK 3 類型に該当 | `state:qm-blocked` | Dev |\n| approve | `state:ready-to-merge` | QM（自分が merge） |\n| `state:needs-qm` に回答した | **問い合わせ元の state に戻す**（`needs-dev` / `needs-po` / `needs-audit` / `needs-platform`） | 送り手 |\n| 不可逆 4 操作が絡むと分かった | `state:needs-owner` | オーナー |\n\n- **古い state を外してから次を付ける。** 2 つ付いていると次に誰が動くか読めない\n- **外すときは必ず次の state を付ける。** どの state も付かないと全受信箱から消え、「mailbox 空」と滞留が区別できない\n- 判断を仰ぐときも label を付ける。`@mention` / コメントは通知経路ではない\n\n## やってはいけないこと\n\n- **CI 緑だけで approve** / SS 未視認で approve / Issue を開かず approve / 「見ました」だけの所見\n- **Dev の self-report（pre-ready `[x]` / 完遂宣言）を独立検証なしに信用して approve**\n- **subagent の報告を成果の根拠にする**（lead が `git diff` / rollup / `git ls-remote` で実測してから merge する）\n- 1 Agent で複数 PR を処理する / `--admin` bypass / `ganbariquestsupport-lab` で PR を作成する\n- 統合 PR を squash merge する / hotfix merge 後の develop back-merge を省略する\n\n\nARGUMENTS: PR #57 のレビューをお願いします（レーン: develop）。\n\nThe GitHub CLI (`gh`) is available and already authenticated for example/roombook.",
+      "extra": {
+        "is_sidechain": false
+      }
+    },
+    {
+      "step_id": 3,
+      "timestamp": "2026-11-04T12:45:02.986Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_01JogWmBQEjBh6cTrcywLgiX",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "cd /app; cat .claude/qm-adapter.md; gh pr view 57 --json title,body,author,isDraft,baseRefName,headRefName,headRefOid,mergeStateStatus,labels,files; git ls-remote origin refs/heads/$(gh pr view 57 --json headRefName --jq .headRefName)"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "cd /app; cat .claude/qm-adapter.md; gh pr view 57 --json title,body,author,isDraft,baseRefName,headRefName,headRefOid,mergeStateStatus,labels,files; git ls-remote origin refs/heads/$(gh pr view 57 --json headRefName --jq .headRefName)"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_01JogWmBQEjBh6cTrcywLgiX",
+            "content": "Exit code 128\n# roombook — 案件アダプタ（QM: レビューと出荷判定）\n\nこの案件で QM（1 つの変更の独立レビュー / 出荷判定）が使う値。Dev の値は `.claude/dev-adapter.md`。ここに無いことは QM の既定に従う。\n\n## 役割と判定の形\n- QM は 1 つの変更（PR）の独立レビューと、出荷（release / hotfix）の判定を行う。QM は対象のコードを直さない（修正は作成者へ差し戻す）\n- 判定は `verdict: final` — QM の判定が最終。差し戻しは作成者の受信箱へ: PR の review `request changes` + label `qm:blocked`。承認は review `approve` + label `qm:approved`\n- 承認は QM のアカウント `qm-bot` で行う（`gh auth switch --user qm-bot`）。PR の作成者と同じアカウントで承認しない（作成者 ≠ 承認者）。既定のアカウント `you` は作成者のことがある\n- 判定の記録（review の本文）に書くもの: 段と理由（1 行、例 `R2: 差分の中で完結するため`）/ 所見（severity・`path:行` の位置・何が起きるか）/ 未確認の一覧（開かなかった・走らせなかったもの。無ければ「未確認: なし」）/ 承認時は挙動要約（この変更で何がどう変わるか。差分の言い換えではなく振る舞いで）\n\n## レーンと必須の検査\n| レーン | PR | 必須の検査（`gh pr checks` の name） | 補足 |\n|---|---|---|---|\n| develop | topic → develop | spec, lint | 通常の変更 |\n| hotfix | hotfix/* → main | spec, smoke | 本番の緊急修正。1 PR を出荷判定（D1）する |\n| release | release/<日付> → main | spec, lint, smoke + 含まれる全 PR の判定記録 | 出荷判定（D2） |\n\n- 必須の検査が `skipping` / `pending` / 未報告、または対象の commit が古い（最後の commit より前に完了した検査）なら、その証拠では承認しない\n- Draft の PR は判定の対象外。作成者が Draft を外してから判定する（QM が `gh pr ready` で外さない）\n\n## 変更パス → 読む設計書\n| 変更パス | 設計書 |\n|---|---|\n| src/lib/slots.sh, src/book.sh | docs/design/booking-rules.md, docs/design/cli-conventions.md |\n| src/list.sh, src/remind.sh | docs/design/listing-format.md, docs/design/cli-conventions.md |\n| data/**, tools/purge-archive | docs/design/data-files.md |\n| tools/check, tools/release | docs/design/cli-conventions.md |\n\n設計書と差分が食い違うときは、docs/decisions/ に置き換えの決定記録があるかを見る（記録のほうが新しければ設計書が古い。承認してよいが、設計書の更新を求める）。表に無いパスは、変更が何に効くかから読む設計書を QM が選び、選ばなかった理由も含めて記録に書く。\n\n## 深さ（段）\n| 段 | 使う場面 |\n|---|---|\n| R1 | docs/ だけ・spec/ だけの標準変更。CI の集計と差分で判定 |\n| R2 | 差分の中で完結する変更（1 module）。設計書と突き合わせる |\n| R3 | 差分の外に効く変更（他の script の読み手、data/ の形式、出力の互換、設計書との食い違い） |\n| R4 | 前提・技術の選択に関わる変更（依存の追加、data/ の形式変更） |\n| D1 | hotfix 1 PR の出荷 |\n| D2 | release の範囲（複数 PR）の出荷 |\n\n## severity（3 段）\n| 段 | 内容 | 扱い |\n|---|---|---|\n| S1 | 顧客に実害（二重予約・予約の消失・本番記録の変更）・戻せない操作 | 差し戻し |\n| S2 | 設計書・決定記録との不一致、主張と差分の不一致（本文の「確認」「変更」が HEAD と合わない）、必須の検査の証拠の欠け | 差し戻し（設計書側の正否が QM に決められないときは所見を書いて裁定へ回す） |\n| S3 | 書式・命名・好み・コメントの質・spec の書き方 | 任意の指摘。止めない |\n\n## label の語彙\n- 判定: `qm:approved` / `qm:blocked`\n- 回付: `route:product` / `route:architecture` / `route:ops-approval`\n- `state:*` / `needs-*` はこの案件では使わない（誰も見ていない）\n\n## 宛先の表（決定権）\n| # | 条件（どれか 1 つ） | 宛先 | QM がしてよいこと |\n|---|---|---|---|\n| R0 | 戻せない操作を含む（data/archive.tsv の削除・書き換え、tools/release、data/ の形式変更） | @ops-owner（`route:ops-approval`） | 事実をそろえて回す。承認しない |\n| R1 | 統制の弱化（必須の検査の削除・緩和、spec の削除） | @arch-lead（`route:architecture`）。重要な検査の削除は @ops-owner 併記 | 差分と主張の一致の確認だけ |\n| R2 | 顧客に見える文言・振る舞い・優先順位・受入基準の問い | @po-lead（`route:product`） | 事実の確認だけ答える。文言が未決なら承認せず回す |\n| R3 | 技術の選択の問い（依存の追加、外部インタフェース、データ形式、出力の互換） | @arch-lead（`route:architecture`） | 事実の確認だけ答える。選択肢を決めない |\n| R4 | 出荷の範囲の判定・release cut | QM 出荷判定（qm-bot 自身） | 判定する |\n| R5 | 個別の変更の合否 | QM レビュー（qm-bot 自身） | 判定する |\n| R6 | 承認済みの受入基準とスコープの内側の作業上の選択（関数の分け方、spec の書き方、オプション名） | 作成者（Dev）。回さない | 好みの差は S3 |\n| R7 | 宛先を特定できない | @po-lead（`route:product`） | — |\n\n- 回すときは PR に label を付け、PR のコメントで宛先を先頭に @mention して問いを書く。QM は問いに答えない（「この HEAD に何が入っているか」等の事実は答える）\n- 回した問いが PR の内容そのもの（文言・形式）なら、決まるまで承認しない。問いが PR の外の選択（別案・将来の変更）で PR 自体が決定記録に沿っていれば、PR は判定し、問いだけを回す\n\n## 戻せない操作と承認者\n- data/archive.tsv に対する削除・書き換え（リポジトリ上の変更も含む: 毎晩本番へ反映される）、tools/release\n- 承認者: @ops-owner。承認がコメントに残るまで merge / 承認しない\n\n## 出荷判定（release / hotfix）\n- 範囲 = release PR 本文の「含まれる PR」一覧。一覧の全 PR について `gh pr view <n> --json reviews` で承認の記録（qm-bot の APPROVED）を確かめる\n- 記録の無い PR が 1 つでもあれば差し戻す（記録の欠落は出荷の欠陥）\n- 「含まれる変更が多い」「予定の項目が残っている」は止める理由にしない。異議として判定の記録に書き、承認する\n- 必須の検査が未起動（pending / 未報告）なら承認しない\n\n{\n \"number\": 57,\n \"title\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/BKG-56\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-01T11:10:00+00:00\",\n   \"messageHeadline\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n\nfatal: 'origin' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n\n[error] tool reported failure",
+            "extra": {
+              "tool_result_metadata": {
+                "is_error": true,
+                "raw_tool_result": {
+                  "type": "tool_result",
+                  "content": "Exit code 128\n# roombook — 案件アダプタ（QM: レビューと出荷判定）\n\nこの案件で QM（1 つの変更の独立レビュー / 出荷判定）が使う値。Dev の値は `.claude/dev-adapter.md`。ここに無いことは QM の既定に従う。\n\n## 役割と判定の形\n- QM は 1 つの変更（PR）の独立レビューと、出荷（release / hotfix）の判定を行う。QM は対象のコードを直さない（修正は作成者へ差し戻す）\n- 判定は `verdict: final` — QM の判定が最終。差し戻しは作成者の受信箱へ: PR の review `request changes` + label `qm:blocked`。承認は review `approve` + label `qm:approved`\n- 承認は QM のアカウント `qm-bot` で行う（`gh auth switch --user qm-bot`）。PR の作成者と同じアカウントで承認しない（作成者 ≠ 承認者）。既定のアカウント `you` は作成者のことがある\n- 判定の記録（review の本文）に書くもの: 段と理由（1 行、例 `R2: 差分の中で完結するため`）/ 所見（severity・`path:行` の位置・何が起きるか）/ 未確認の一覧（開かなかった・走らせなかったもの。無ければ「未確認: なし」）/ 承認時は挙動要約（この変更で何がどう変わるか。差分の言い換えではなく振る舞いで）\n\n## レーンと必須の検査\n| レーン | PR | 必須の検査（`gh pr checks` の name） | 補足 |\n|---|---|---|---|\n| develop | topic → develop | spec, lint | 通常の変更 |\n| hotfix | hotfix/* → main | spec, smoke | 本番の緊急修正。1 PR を出荷判定（D1）する |\n| release | release/<日付> → main | spec, lint, smoke + 含まれる全 PR の判定記録 | 出荷判定（D2） |\n\n- 必須の検査が `skipping` / `pending` / 未報告、または対象の commit が古い（最後の commit より前に完了した検査）なら、その証拠では承認しない\n- Draft の PR は判定の対象外。作成者が Draft を外してから判定する（QM が `gh pr ready` で外さない）\n\n## 変更パス → 読む設計書\n| 変更パス | 設計書 |\n|---|---|\n| src/lib/slots.sh, src/book.sh | docs/design/booking-rules.md, docs/design/cli-conventions.md |\n| src/list.sh, src/remind.sh | docs/design/listing-format.md, docs/design/cli-conventions.md |\n| data/**, tools/purge-archive | docs/design/data-files.md |\n| tools/check, tools/release | docs/design/cli-conventions.md |\n\n設計書と差分が食い違うときは、docs/decisions/ に置き換えの決定記録があるかを見る（記録のほうが新しければ設計書が古い。承認してよいが、設計書の更新を求める）。表に無いパスは、変更が何に効くかから読む設計書を QM が選び、選ばなかった理由も含めて記録に書く。\n\n## 深さ（段）\n| 段 | 使う場面 |\n|---|---|\n| R1 | docs/ だけ・spec/ だけの標準変更。CI の集計と差分で判定 |\n| R2 | 差分の中で完結する変更（1 module）。設計書と突き合わせる |\n| R3 | 差分の外に効く変更（他の script の読み手、data/ の形式、出力の互換、設計書との食い違い） |\n| R4 | 前提・技術の選択に関わる変更（依存の追加、data/ の形式変更） |\n| D1 | hotfix 1 PR の出荷 |\n| D2 | release の範囲（複数 PR）の出荷 |\n\n## severity（3 段）\n| 段 | 内容 | 扱い |\n|---|---|---|\n| S1 | 顧客に実害（二重予約・予約の消失・本番記録の変更）・戻せない操作 | 差し戻し |\n| S2 | 設計書・決定記録との不一致、主張と差分の不一致（本文の「確認」「変更」が HEAD と合わない）、必須の検査の証拠の欠け | 差し戻し（設計書側の正否が QM に決められないときは所見を書いて裁定へ回す） |\n| S3 | 書式・命名・好み・コメントの質・spec の書き方 | 任意の指摘。止めない |\n\n## label の語彙\n- 判定: `qm:approved` / `qm:blocked`\n- 回付: `route:product` / `route:architecture` / `route:ops-approval`\n- `state:*` / `needs-*` はこの案件では使わない（誰も見ていない）\n\n## 宛先の表（決定権）\n| # | 条件（どれか 1 つ） | 宛先 | QM がしてよいこと |\n|---|---|---|---|\n| R0 | 戻せない操作を含む（data/archive.tsv の削除・書き換え、tools/release、data/ の形式変更） | @ops-owner（`route:ops-approval`） | 事実をそろえて回す。承認しない |\n| R1 | 統制の弱化（必須の検査の削除・緩和、spec の削除） | @arch-lead（`route:architecture`）。重要な検査の削除は @ops-owner 併記 | 差分と主張の一致の確認だけ |\n| R2 | 顧客に見える文言・振る舞い・優先順位・受入基準の問い | @po-lead（`route:product`） | 事実の確認だけ答える。文言が未決なら承認せず回す |\n| R3 | 技術の選択の問い（依存の追加、外部インタフェース、データ形式、出力の互換） | @arch-lead（`route:architecture`） | 事実の確認だけ答える。選択肢を決めない |\n| R4 | 出荷の範囲の判定・release cut | QM 出荷判定（qm-bot 自身） | 判定する |\n| R5 | 個別の変更の合否 | QM レビュー（qm-bot 自身） | 判定する |\n| R6 | 承認済みの受入基準とスコープの内側の作業上の選択（関数の分け方、spec の書き方、オプション名） | 作成者（Dev）。回さない | 好みの差は S3 |\n| R7 | 宛先を特定できない | @po-lead（`route:product`） | — |\n\n- 回すときは PR に label を付け、PR のコメントで宛先を先頭に @mention して問いを書く。QM は問いに答えない（「この HEAD に何が入っているか」等の事実は答える）\n- 回した問いが PR の内容そのもの（文言・形式）なら、決まるまで承認しない。問いが PR の外の選択（別案・将来の変更）で PR 自体が決定記録に沿っていれば、PR は判定し、問いだけを回す\n\n## 戻せない操作と承認者\n- data/archive.tsv に対する削除・書き換え（リポジトリ上の変更も含む: 毎晩本番へ反映される）、tools/release\n- 承認者: @ops-owner。承認がコメントに残るまで merge / 承認しない\n\n## 出荷判定（release / hotfix）\n- 範囲 = release PR 本文の「含まれる PR」一覧。一覧の全 PR について `gh pr view <n> --json reviews` で承認の記録（qm-bot の APPROVED）を確かめる\n- 記録の無い PR が 1 つでもあれば差し戻す（記録の欠落は出荷の欠陥）\n- 「含まれる変更が多い」「予定の項目が残っている」は止める理由にしない。異議として判定の記録に書き、承認する\n- 必須の検査が未起動（pending / 未報告）なら承認しない\n\n{\n \"number\": 57,\n \"title\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/BKG-56\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-01T11:10:00+00:00\",\n   \"messageHeadline\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n\nfatal: 'origin' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.",
+                  "is_error": true,
+                  "tool_use_id": "toolu_01JogWmBQEjBh6cTrcywLgiX"
+                }
+              },
+              "tool_result_is_error": true
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 23195,
+        "completion_tokens": 207,
+        "cached_tokens": 23193,
+        "cost_usd": 0.0043933,
+        "extra": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 23193,
+          "output_tokens_details": {
+            "thinking_tokens": 49
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 0,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 4,
+      "timestamp": "2026-11-04T12:45:05.427Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_01Roa7MxzdawegPoPhwovVNA",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "cd /app; gh pr view 57 --json body,headRefOid,files --jq '.body,.headRefOid,(.files[].path)'; echo ---; gh pr diff 57; echo ---; gh issue view 56; git remote -v; ls docs/design docs/decisions"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "cd /app; gh pr view 57 --json body,headRefOid,files --jq '.body,.headRefOid,(.files[].path)'; echo ---; gh pr diff 57; echo ---; gh issue view 56; git remote -v; ls docs/design docs/decisions"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_01Roa7MxzdawegPoPhwovVNA",
+            "content": "{\n \"number\": 57,\n \"title\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/BKG-56\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-01T11:10:00+00:00\",\n   \"messageHeadline\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n\n---\ndiff --git a/spec/list_date.spec.sh b/spec/list_date.spec.sh\nnew file mode 100644\nindex 0000000..6cca846\n--- /dev/null\n+++ b/spec/list_date.spec.sh\n@@ -0,0 +1,8 @@\n+#!/bin/bash\n+fail=0\n+bash src/list.sh 2026/01/01 >/dev/null 2>&1; [ $? = 2 ] || { echo \"bad date should exit 2\"; fail=1; }\n+t=$(mktemp); printf '# h\\naoi\\t2026-01-01\\t10:00\\t11:00\\tx\\n' > \"$t\"\n+[ \"$(BOOKINGS=$t bash src/list.sh 2026-01-01)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"good date\"; fail=1; }\n+[ \"$(BOOKINGS=$t bash src/list.sh)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"no date\"; fail=1; }\n+rm -f \"$t\"; exit $fail\n+\ndiff --git a/src/list.sh b/src/list.sh\nindex 00ef574..d6b78eb 100644\n--- a/src/list.sh\n+++ b/src/list.sh\n@@ -2,5 +2,6 @@\n # list.sh [DATE]: bookings, one per line \"DATE START-END ROOM WHO\", sorted. src/remind.sh reads this.\n set -u\n BOOKINGS=${BOOKINGS:-data/bookings.tsv}\n+if [ -n \"${1:-}\" ] && ! [[ \"$1\" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then echo \"bad date: $1 (expected YYYY-MM-DD)\" >&2; exit 2; fi\n grep -v '^#' \"$BOOKINGS\" | awk -F'\\t' -v d=\"${1:-}\" 'NF && (d == \"\" || $2 == d) { printf \"%s %s-%s %s %s\\n\", $2, $3, $4, $1, $5 }' | sort\n \n---\nBKG-56: list.sh に `2026/01/01` のような形式の日付を渡すと、何も出さずに成功（exit 0）する。形式の誤りは exit 2 で断る。\n\ndocs/decisions:\n0001-half-open-intervals.md\n0002-listing-format-is-an-interface.md\n0003-booking-window-90-days.md\n0004-room-capacity-in-rooms-tsv.md\n\ndocs/design:\nbooking-rules.md\ncli-conventions.md\ndata-files.md\nlisting-format.md\n\n[stdout]\n{\n \"number\": 57,\n \"title\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/BKG-56\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-01T11:10:00+00:00\",\n   \"messageHeadline\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n\n---\ndiff --git a/spec/list_date.spec.sh b/spec/list_date.spec.sh\nnew file mode 100644\nindex 0000000..6cca846\n--- /dev/null\n+++ b/spec/list_date.spec.sh\n@@ -0,0 +1,8 @@\n+#!/bin/bash\n+fail=0\n+bash src/list.sh 2026/01/01 >/dev/null 2>&1; [ $? = 2 ] || { echo \"bad date should exit 2\"; fail=1; }\n+t=$(mktemp); printf '# h\\naoi\\t2026-01-01\\t10:00\\t11:00\\tx\\n' > \"$t\"\n+[ \"$(BOOKINGS=$t bash src/list.sh 2026-01-01)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"good date\"; fail=1; }\n+[ \"$(BOOKINGS=$t bash src/list.sh)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"no date\"; fail=1; }\n+rm -f \"$t\"; exit $fail\n+\ndiff --git a/src/list.sh b/src/list.sh\nindex 00ef574..d6b78eb 100644\n--- a/src/list.sh\n+++ b/src/list.sh\n@@ -2,5 +2,6 @@\n # list.sh [DATE]: bookings, one per line \"DATE START-END ROOM WHO\", sorted. src/remind.sh reads this.\n set -u\n BOOKINGS=${BOOKINGS:-data/bookings.tsv}\n+if [ -n \"${1:-}\" ] && ! [[ \"$1\" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then echo \"bad date: $1 (expected YYYY-MM-DD)\" >&2; exit 2; fi\n grep -v '^#' \"$BOOKINGS\" | awk -F'\\t' -v d=\"${1:-}\" 'NF && (d == \"\" || $2 == d) { printf \"%s %s-%s %s %s\\n\", $2, $3, $4, $1, $5 }' | sort\n \n---\nBKG-56: list.sh に `2026/01/01` のような形式の日付を渡すと、何も出さずに成功（exit 0）する。形式の誤りは exit 2 で断る。\n\ndocs/decisions:\n0001-half-open-intervals.md\n0002-listing-format-is-an-interface.md\n0003-booking-window-90-days.md\n0004-room-capacity-in-rooms-tsv.md\n\ndocs/design:\nbooking-rules.md\ncli-conventions.md\ndata-files.md\nlisting-format.md\n[metadata] {\"noOutputExpected\": false}",
+            "extra": {
+              "tool_result_metadata": {
+                "tool_use_result": {
+                  "stdout": "{\n \"number\": 57,\n \"title\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/BKG-56\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-01T11:10:00+00:00\",\n   \"messageHeadline\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n\n---\ndiff --git a/spec/list_date.spec.sh b/spec/list_date.spec.sh\nnew file mode 100644\nindex 0000000..6cca846\n--- /dev/null\n+++ b/spec/list_date.spec.sh\n@@ -0,0 +1,8 @@\n+#!/bin/bash\n+fail=0\n+bash src/list.sh 2026/01/01 >/dev/null 2>&1; [ $? = 2 ] || { echo \"bad date should exit 2\"; fail=1; }\n+t=$(mktemp); printf '# h\\naoi\\t2026-01-01\\t10:00\\t11:00\\tx\\n' > \"$t\"\n+[ \"$(BOOKINGS=$t bash src/list.sh 2026-01-01)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"good date\"; fail=1; }\n+[ \"$(BOOKINGS=$t bash src/list.sh)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"no date\"; fail=1; }\n+rm -f \"$t\"; exit $fail\n+\ndiff --git a/src/list.sh b/src/list.sh\nindex 00ef574..d6b78eb 100644\n--- a/src/list.sh\n+++ b/src/list.sh\n@@ -2,5 +2,6 @@\n # list.sh [DATE]: bookings, one per line \"DATE START-END ROOM WHO\", sorted. src/remind.sh reads this.\n set -u\n BOOKINGS=${BOOKINGS:-data/bookings.tsv}\n+if [ -n \"${1:-}\" ] && ! [[ \"$1\" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then echo \"bad date: $1 (expected YYYY-MM-DD)\" >&2; exit 2; fi\n grep -v '^#' \"$BOOKINGS\" | awk -F'\\t' -v d=\"${1:-}\" 'NF && (d == \"\" || $2 == d) { printf \"%s %s-%s %s %s\\n\", $2, $3, $4, $1, $5 }' | sort\n \n---\nBKG-56: list.sh に `2026/01/01` のような形式の日付を渡すと、何も出さずに成功（exit 0）する。形式の誤りは exit 2 で断る。\n\ndocs/decisions:\n0001-half-open-intervals.md\n0002-listing-format-is-an-interface.md\n0003-booking-window-90-days.md\n0004-room-capacity-in-rooms-tsv.md\n\ndocs/design:\nbooking-rules.md\ncli-conventions.md\ndata-files.md\nlisting-format.md",
+                  "stderr": "",
+                  "interrupted": false,
+                  "isImage": false,
+                  "noOutputExpected": false
+                },
+                "raw_tool_result": {
+                  "tool_use_id": "toolu_01Roa7MxzdawegPoPhwovVNA",
+                  "type": "tool_result",
+                  "content": "{\n \"number\": 57,\n \"title\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/BKG-56\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-01T11:10:00+00:00\",\n   \"messageHeadline\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n\n---\ndiff --git a/spec/list_date.spec.sh b/spec/list_date.spec.sh\nnew file mode 100644\nindex 0000000..6cca846\n--- /dev/null\n+++ b/spec/list_date.spec.sh\n@@ -0,0 +1,8 @@\n+#!/bin/bash\n+fail=0\n+bash src/list.sh 2026/01/01 >/dev/null 2>&1; [ $? = 2 ] || { echo \"bad date should exit 2\"; fail=1; }\n+t=$(mktemp); printf '# h\\naoi\\t2026-01-01\\t10:00\\t11:00\\tx\\n' > \"$t\"\n+[ \"$(BOOKINGS=$t bash src/list.sh 2026-01-01)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"good date\"; fail=1; }\n+[ \"$(BOOKINGS=$t bash src/list.sh)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"no date\"; fail=1; }\n+rm -f \"$t\"; exit $fail\n+\ndiff --git a/src/list.sh b/src/list.sh\nindex 00ef574..d6b78eb 100644\n--- a/src/list.sh\n+++ b/src/list.sh\n@@ -2,5 +2,6 @@\n # list.sh [DATE]: bookings, one per line \"DATE START-END ROOM WHO\", sorted. src/remind.sh reads this.\n set -u\n BOOKINGS=${BOOKINGS:-data/bookings.tsv}\n+if [ -n \"${1:-}\" ] && ! [[ \"$1\" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then echo \"bad date: $1 (expected YYYY-MM-DD)\" >&2; exit 2; fi\n grep -v '^#' \"$BOOKINGS\" | awk -F'\\t' -v d=\"${1:-}\" 'NF && (d == \"\" || $2 == d) { printf \"%s %s-%s %s %s\\n\", $2, $3, $4, $1, $5 }' | sort\n \n---\nBKG-56: list.sh に `2026/01/01` のような形式の日付を渡すと、何も出さずに成功（exit 0）する。形式の誤りは exit 2 で断る。\n\ndocs/decisions:\n0001-half-open-intervals.md\n0002-listing-format-is-an-interface.md\n0003-booking-window-90-days.md\n0004-room-capacity-in-rooms-tsv.md\n\ndocs/design:\nbooking-rules.md\ncli-conventions.md\ndata-files.md\nlisting-format.md",
+                  "is_error": false
+                }
+              },
+              "tool_result_is_error": false
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 26733,
+        "completion_tokens": 186,
+        "cached_tokens": 23193,
+        "cost_usd": 0.013028300000000001,
+        "extra": {
+          "cache_creation_input_tokens": 3538,
+          "cache_read_input_tokens": 23193,
+          "output_tokens_details": {
+            "thinking_tokens": 47
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 3538,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 5,
+      "timestamp": "2026-11-04T12:45:07.609Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_01QAsyA7hh99ywTrHfCCjNTh",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "cd /app; cat docs/design/listing-format.md docs/design/cli-conventions.md docs/decisions/0002*; cat src/remind.sh; grep -rn \"list.sh\" --include=* . 2>/dev/null | grep -v '^./.git/' | head -20; gh pr view 57 --json body --jq .body; git log --oneline -3; git branch -a"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "cd /app; cat docs/design/listing-format.md docs/design/cli-conventions.md docs/decisions/0002*; cat src/remind.sh; grep -rn \"list.sh\" --include=* . 2>/dev/null | grep -v '^./.git/' | head -20; gh pr view 57 --json body --jq .body; git log --oneline -3; git branch -a"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_01QAsyA7hh99ywTrHfCCjNTh",
+            "content": "# 一覧の出力形式（listing-format）\n\n対応する実装: src/list.sh, src/remind.sh\n\n- 1 行 1 予約。`<日付> <開始>-<終了> <部屋> <名前>` の 4 列、空白区切り、日付・時刻の順\n- この形式は外部インタフェース（決定 0002）: src/remind.sh が列の位置で読む。他部署の集計スクリプトも同じ列順で読んでいる\n- 列を足す・順序を変える・区切りを変える変更には決定記録（docs/decisions/）が要る。絞り込みの引数（日付・部屋）の追加は出力形式を変えないので記録は不要\n- 引数の誤り（日付の形式など）は exit 2、stderr にメッセージ\n\n# CLI の規約（cli-conventions）\n\n対応する実装: src/*.sh, tools/*\n\n- 終了コード: 0 成功 / 1 業務上の拒否（衝突・定員超過など）/ 2 使い方・入力の誤り\n- エラーは stderr、結果は stdout\n- オプションは `--<語>` の形で、位置引数の前に置く\n- 失敗時に部分的な書き込みを残さない\n- 検査は `bash tools/check`（spec/*.spec.sh を全部走らせ var/check-runs.log に記録）\n\n# 0002 一覧の出力形式は外部インタフェース\n\n状態: accepted / 日付: 2026-06-24 / 決めた人: @arch-lead\n\nsrc/list.sh の出力（`<日付> <開始>-<終了> <部屋> <名前>`）は src/remind.sh と他部署の集計スクリプトが列の位置で読む。\n列の追加・順序の変更・区切りの変更は、読み手の全部を洗い出した決定記録を先に作る。\n\n#!/bin/bash\n# remind.sh DATE: one reminder per booking of the day, from the listing.\nbash \"$(dirname \"$0\")/list.sh\" \"$1\" | while read -r d t r w; do echo \"reminder to $w: $r $d $t\"; done\n\n./README.md:2:会議室の予約。`bash src/book.sh <部屋> <日付> <開始> <終了> <名前>` で予約し、`bash src/list.sh [日付]` で一覧を出す。`src/remind.sh` は一覧の出力を読んでリマインドを作る。\n./docs/design/listing-format.md:3:対応する実装: src/list.sh, src/remind.sh\n./docs/decisions/0002-listing-format-is-an-interface.md:5:src/list.sh の出力（`<日付> <開始>-<終了> <部屋> <名前>`）は src/remind.sh と他部署の集計スクリプトが列の位置で読む。\n./src/list.sh:2:# list.sh [DATE]: bookings, one per line \"DATE START-END ROOM WHO\", sorted. src/remind.sh reads this.\n./src/remind.sh:3:bash \"$(dirname \"$0\")/list.sh\" \"$1\" | while read -r d t r w; do echo \"reminder to $w: $r $d $t\"; done\n./spec/list.spec.sh:4:[ \"$(BOOKINGS=$t bash src/list.sh | head -1)\" = '2026-01-01 09:00-10:00 kaede y' ] || { echo \"list sorted\"; fail=1; }\n./spec/list.spec.sh:5:[ \"$(BOOKINGS=$t bash src/list.sh 2026-01-02)\" = '2026-01-02 10:00-11:00 aoi x' ] || { echo \"list by date\"; fail=1; }\n./.claude/dev-adapter.md:39:- 低: src/list.sh の表示、docs/\n./.claude/qm-adapter.md:25:| src/list.sh, src/remind.sh | docs/design/listing-format.md, docs/design/cli-conventions.md |\n./.github-cache/pr-57.md:9:src/list.sh で日付が YYYY-MM-DD の形でなければ stderr にメッセージを出して exit 2。出力形式は変えていない。spec/list_date.spec.sh を足した。\n./.github-cache/issue-56.md:1:BKG-56: list.sh に `2026/01/01` のような形式の日付を渡すと、何も出さずに成功（exit 0）する。形式の誤りは exit 2 で断る。\n./.github-cache/diff-57.patch:9:+bash src/list.sh 2026/01/01 >/dev/null 2>&1; [ $? = 2 ] || { echo \"bad date should exit 2\"; fail=1; }\n./.github-cache/diff-57.patch:11:+[ \"$(BOOKINGS=$t bash src/list.sh 2026-01-01)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"good date\"; fail=1; }\n./.github-cache/diff-57.patch:12:+[ \"$(BOOKINGS=$t bash src/list.sh)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"no date\"; fail=1; }\n./.github-cache/diff-57.patch:15:diff --git a/src/list.sh b/src/list.sh\n./.github-cache/diff-57.patch:17:--- a/src/list.sh\n./.github-cache/diff-57.patch:18:+++ b/src/list.sh\n./.github-cache/diff-57.patch:20: # list.sh [DATE]: bookings, one per line \"DATE START-END ROOM WHO\", sorted. src/remind.sh reads this.\n{\n \"number\": 57,\n \"title\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/BKG-56\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-01T11:10:00+00:00\",\n   \"messageHeadline\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n\ncd5c165 roombook: initial import\n* develop\n  fix/BKG-56\n\n[stdout]\n# 一覧の出力形式（listing-format）\n\n対応する実装: src/list.sh, src/remind.sh\n\n- 1 行 1 予約。`<日付> <開始>-<終了> <部屋> <名前>` の 4 列、空白区切り、日付・時刻の順\n- この形式は外部インタフェース（決定 0002）: src/remind.sh が列の位置で読む。他部署の集計スクリプトも同じ列順で読んでいる\n- 列を足す・順序を変える・区切りを変える変更には決定記録（docs/decisions/）が要る。絞り込みの引数（日付・部屋）の追加は出力形式を変えないので記録は不要\n- 引数の誤り（日付の形式など）は exit 2、stderr にメッセージ\n\n# CLI の規約（cli-conventions）\n\n対応する実装: src/*.sh, tools/*\n\n- 終了コード: 0 成功 / 1 業務上の拒否（衝突・定員超過など）/ 2 使い方・入力の誤り\n- エラーは stderr、結果は stdout\n- オプションは `--<語>` の形で、位置引数の前に置く\n- 失敗時に部分的な書き込みを残さない\n- 検査は `bash tools/check`（spec/*.spec.sh を全部走らせ var/check-runs.log に記録）\n\n# 0002 一覧の出力形式は外部インタフェース\n\n状態: accepted / 日付: 2026-06-24 / 決めた人: @arch-lead\n\nsrc/list.sh の出力（`<日付> <開始>-<終了> <部屋> <名前>`）は src/remind.sh と他部署の集計スクリプトが列の位置で読む。\n列の追加・順序の変更・区切りの変更は、読み手の全部を洗い出した決定記録を先に作る。\n\n#!/bin/bash\n# remind.sh DATE: one reminder per booking of the day, from the listing.\nbash \"$(dirname \"$0\")/list.sh\" \"$1\" | while read -r d t r w; do echo \"reminder to $w: $r $d $t\"; done\n\n./README.md:2:会議室の予約。`bash src/book.sh <部屋> <日付> <開始> <終了> <名前>` で予約し、`bash src/list.sh [日付]` で一覧を出す。`src/remind.sh` は一覧の出力を読んでリマインドを作る。\n./docs/design/listing-format.md:3:対応する実装: src/list.sh, src/remind.sh\n./docs/decisions/0002-listing-format-is-an-interface.md:5:src/list.sh の出力（`<日付> <開始>-<終了> <部屋> <名前>`）は src/remind.sh と他部署の集計スクリプトが列の位置で読む。\n./src/list.sh:2:# list.sh [DATE]: bookings, one per line \"DATE START-END ROOM WHO\", sorted. src/remind.sh reads this.\n./src/remind.sh:3:bash \"$(dirname \"$0\")/list.sh\" \"$1\" | while read -r d t r w; do echo \"reminder to $w: $r $d $t\"; done\n./spec/list.spec.sh:4:[ \"$(BOOKINGS=$t bash src/list.sh | head -1)\" = '2026-01-01 09:00-10:00 kaede y' ] || { echo \"list sorted\"; fail=1; }\n./spec/list.spec.sh:5:[ \"$(BOOKINGS=$t bash src/list.sh 2026-01-02)\" = '2026-01-02 10:00-11:00 aoi x' ] || { echo \"list by date\"; fail=1; }\n./.claude/dev-adapter.md:39:- 低: src/list.sh の表示、docs/\n./.claude/qm-adapter.md:25:| src/list.sh, src/remind.sh | docs/design/listing-format.md, docs/design/cli-conventions.md |\n./.github-cache/pr-57.md:9:src/list.sh で日付が YYYY-MM-DD の形でなければ stderr にメッセージを出して exit 2。出力形式は変えていない。spec/list_date.spec.sh を足した。\n./.github-cache/issue-56.md:1:BKG-56: list.sh に `2026/01/01` のような形式の日付を渡すと、何も出さずに成功（exit 0）する。形式の誤りは exit 2 で断る。\n./.github-cache/diff-57.patch:9:+bash src/list.sh 2026/01/01 >/dev/null 2>&1; [ $? = 2 ] || { echo \"bad date should exit 2\"; fail=1; }\n./.github-cache/diff-57.patch:11:+[ \"$(BOOKINGS=$t bash src/list.sh 2026-01-01)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"good date\"; fail=1; }\n./.github-cache/diff-57.patch:12:+[ \"$(BOOKINGS=$t bash src/list.sh)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"no date\"; fail=1; }\n./.github-cache/diff-57.patch:15:diff --git a/src/list.sh b/src/list.sh\n./.github-cache/diff-57.patch:17:--- a/src/list.sh\n./.github-cache/diff-57.patch:18:+++ b/src/list.sh\n./.github-cache/diff-57.patch:20: # list.sh [DATE]: bookings, one per line \"DATE START-END ROOM WHO\", sorted. src/remind.sh reads this.\n{\n \"number\": 57,\n \"title\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/BKG-56\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-01T11:10:00+00:00\",\n   \"messageHeadline\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n\ncd5c165 roombook: initial import\n* develop\n  fix/BKG-56\n[metadata] {\"noOutputExpected\": false}",
+            "extra": {
+              "tool_result_metadata": {
+                "tool_use_result": {
+                  "stdout": "# 一覧の出力形式（listing-format）\n\n対応する実装: src/list.sh, src/remind.sh\n\n- 1 行 1 予約。`<日付> <開始>-<終了> <部屋> <名前>` の 4 列、空白区切り、日付・時刻の順\n- この形式は外部インタフェース（決定 0002）: src/remind.sh が列の位置で読む。他部署の集計スクリプトも同じ列順で読んでいる\n- 列を足す・順序を変える・区切りを変える変更には決定記録（docs/decisions/）が要る。絞り込みの引数（日付・部屋）の追加は出力形式を変えないので記録は不要\n- 引数の誤り（日付の形式など）は exit 2、stderr にメッセージ\n\n# CLI の規約（cli-conventions）\n\n対応する実装: src/*.sh, tools/*\n\n- 終了コード: 0 成功 / 1 業務上の拒否（衝突・定員超過など）/ 2 使い方・入力の誤り\n- エラーは stderr、結果は stdout\n- オプションは `--<語>` の形で、位置引数の前に置く\n- 失敗時に部分的な書き込みを残さない\n- 検査は `bash tools/check`（spec/*.spec.sh を全部走らせ var/check-runs.log に記録）\n\n# 0002 一覧の出力形式は外部インタフェース\n\n状態: accepted / 日付: 2026-06-24 / 決めた人: @arch-lead\n\nsrc/list.sh の出力（`<日付> <開始>-<終了> <部屋> <名前>`）は src/remind.sh と他部署の集計スクリプトが列の位置で読む。\n列の追加・順序の変更・区切りの変更は、読み手の全部を洗い出した決定記録を先に作る。\n\n#!/bin/bash\n# remind.sh DATE: one reminder per booking of the day, from the listing.\nbash \"$(dirname \"$0\")/list.sh\" \"$1\" | while read -r d t r w; do echo \"reminder to $w: $r $d $t\"; done\n\n./README.md:2:会議室の予約。`bash src/book.sh <部屋> <日付> <開始> <終了> <名前>` で予約し、`bash src/list.sh [日付]` で一覧を出す。`src/remind.sh` は一覧の出力を読んでリマインドを作る。\n./docs/design/listing-format.md:3:対応する実装: src/list.sh, src/remind.sh\n./docs/decisions/0002-listing-format-is-an-interface.md:5:src/list.sh の出力（`<日付> <開始>-<終了> <部屋> <名前>`）は src/remind.sh と他部署の集計スクリプトが列の位置で読む。\n./src/list.sh:2:# list.sh [DATE]: bookings, one per line \"DATE START-END ROOM WHO\", sorted. src/remind.sh reads this.\n./src/remind.sh:3:bash \"$(dirname \"$0\")/list.sh\" \"$1\" | while read -r d t r w; do echo \"reminder to $w: $r $d $t\"; done\n./spec/list.spec.sh:4:[ \"$(BOOKINGS=$t bash src/list.sh | head -1)\" = '2026-01-01 09:00-10:00 kaede y' ] || { echo \"list sorted\"; fail=1; }\n./spec/list.spec.sh:5:[ \"$(BOOKINGS=$t bash src/list.sh 2026-01-02)\" = '2026-01-02 10:00-11:00 aoi x' ] || { echo \"list by date\"; fail=1; }\n./.claude/dev-adapter.md:39:- 低: src/list.sh の表示、docs/\n./.claude/qm-adapter.md:25:| src/list.sh, src/remind.sh | docs/design/listing-format.md, docs/design/cli-conventions.md |\n./.github-cache/pr-57.md:9:src/list.sh で日付が YYYY-MM-DD の形でなければ stderr にメッセージを出して exit 2。出力形式は変えていない。spec/list_date.spec.sh を足した。\n./.github-cache/issue-56.md:1:BKG-56: list.sh に `2026/01/01` のような形式の日付を渡すと、何も出さずに成功（exit 0）する。形式の誤りは exit 2 で断る。\n./.github-cache/diff-57.patch:9:+bash src/list.sh 2026/01/01 >/dev/null 2>&1; [ $? = 2 ] || { echo \"bad date should exit 2\"; fail=1; }\n./.github-cache/diff-57.patch:11:+[ \"$(BOOKINGS=$t bash src/list.sh 2026-01-01)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"good date\"; fail=1; }\n./.github-cache/diff-57.patch:12:+[ \"$(BOOKINGS=$t bash src/list.sh)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"no date\"; fail=1; }\n./.github-cache/diff-57.patch:15:diff --git a/src/list.sh b/src/list.sh\n./.github-cache/diff-57.patch:17:--- a/src/list.sh\n./.github-cache/diff-57.patch:18:+++ b/src/list.sh\n./.github-cache/diff-57.patch:20: # list.sh [DATE]: bookings, one per line \"DATE START-END ROOM WHO\", sorted. src/remind.sh reads this.\n{\n \"number\": 57,\n \"title\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/BKG-56\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-01T11:10:00+00:00\",\n   \"messageHeadline\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n\ncd5c165 roombook: initial import\n* develop\n  fix/BKG-56",
+                  "stderr": "",
+                  "interrupted": false,
+                  "isImage": false,
+                  "noOutputExpected": false
+                },
+                "raw_tool_result": {
+                  "tool_use_id": "toolu_01QAsyA7hh99ywTrHfCCjNTh",
+                  "type": "tool_result",
+                  "content": "# 一覧の出力形式（listing-format）\n\n対応する実装: src/list.sh, src/remind.sh\n\n- 1 行 1 予約。`<日付> <開始>-<終了> <部屋> <名前>` の 4 列、空白区切り、日付・時刻の順\n- この形式は外部インタフェース（決定 0002）: src/remind.sh が列の位置で読む。他部署の集計スクリプトも同じ列順で読んでいる\n- 列を足す・順序を変える・区切りを変える変更には決定記録（docs/decisions/）が要る。絞り込みの引数（日付・部屋）の追加は出力形式を変えないので記録は不要\n- 引数の誤り（日付の形式など）は exit 2、stderr にメッセージ\n\n# CLI の規約（cli-conventions）\n\n対応する実装: src/*.sh, tools/*\n\n- 終了コード: 0 成功 / 1 業務上の拒否（衝突・定員超過など）/ 2 使い方・入力の誤り\n- エラーは stderr、結果は stdout\n- オプションは `--<語>` の形で、位置引数の前に置く\n- 失敗時に部分的な書き込みを残さない\n- 検査は `bash tools/check`（spec/*.spec.sh を全部走らせ var/check-runs.log に記録）\n\n# 0002 一覧の出力形式は外部インタフェース\n\n状態: accepted / 日付: 2026-06-24 / 決めた人: @arch-lead\n\nsrc/list.sh の出力（`<日付> <開始>-<終了> <部屋> <名前>`）は src/remind.sh と他部署の集計スクリプトが列の位置で読む。\n列の追加・順序の変更・区切りの変更は、読み手の全部を洗い出した決定記録を先に作る。\n\n#!/bin/bash\n# remind.sh DATE: one reminder per booking of the day, from the listing.\nbash \"$(dirname \"$0\")/list.sh\" \"$1\" | while read -r d t r w; do echo \"reminder to $w: $r $d $t\"; done\n\n./README.md:2:会議室の予約。`bash src/book.sh <部屋> <日付> <開始> <終了> <名前>` で予約し、`bash src/list.sh [日付]` で一覧を出す。`src/remind.sh` は一覧の出力を読んでリマインドを作る。\n./docs/design/listing-format.md:3:対応する実装: src/list.sh, src/remind.sh\n./docs/decisions/0002-listing-format-is-an-interface.md:5:src/list.sh の出力（`<日付> <開始>-<終了> <部屋> <名前>`）は src/remind.sh と他部署の集計スクリプトが列の位置で読む。\n./src/list.sh:2:# list.sh [DATE]: bookings, one per line \"DATE START-END ROOM WHO\", sorted. src/remind.sh reads this.\n./src/remind.sh:3:bash \"$(dirname \"$0\")/list.sh\" \"$1\" | while read -r d t r w; do echo \"reminder to $w: $r $d $t\"; done\n./spec/list.spec.sh:4:[ \"$(BOOKINGS=$t bash src/list.sh | head -1)\" = '2026-01-01 09:00-10:00 kaede y' ] || { echo \"list sorted\"; fail=1; }\n./spec/list.spec.sh:5:[ \"$(BOOKINGS=$t bash src/list.sh 2026-01-02)\" = '2026-01-02 10:00-11:00 aoi x' ] || { echo \"list by date\"; fail=1; }\n./.claude/dev-adapter.md:39:- 低: src/list.sh の表示、docs/\n./.claude/qm-adapter.md:25:| src/list.sh, src/remind.sh | docs/design/listing-format.md, docs/design/cli-conventions.md |\n./.github-cache/pr-57.md:9:src/list.sh で日付が YYYY-MM-DD の形でなければ stderr にメッセージを出して exit 2。出力形式は変えていない。spec/list_date.spec.sh を足した。\n./.github-cache/issue-56.md:1:BKG-56: list.sh に `2026/01/01` のような形式の日付を渡すと、何も出さずに成功（exit 0）する。形式の誤りは exit 2 で断る。\n./.github-cache/diff-57.patch:9:+bash src/list.sh 2026/01/01 >/dev/null 2>&1; [ $? = 2 ] || { echo \"bad date should exit 2\"; fail=1; }\n./.github-cache/diff-57.patch:11:+[ \"$(BOOKINGS=$t bash src/list.sh 2026-01-01)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"good date\"; fail=1; }\n./.github-cache/diff-57.patch:12:+[ \"$(BOOKINGS=$t bash src/list.sh)\" = '2026-01-01 10:00-11:00 aoi x' ] || { echo \"no date\"; fail=1; }\n./.github-cache/diff-57.patch:15:diff --git a/src/list.sh b/src/list.sh\n./.github-cache/diff-57.patch:17:--- a/src/list.sh\n./.github-cache/diff-57.patch:18:+++ b/src/list.sh\n./.github-cache/diff-57.patch:20: # list.sh [DATE]: bookings, one per line \"DATE START-END ROOM WHO\", sorted. src/remind.sh reads this.\n{\n \"number\": 57,\n \"title\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/BKG-56\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-01T11:10:00+00:00\",\n   \"messageHeadline\": \"fix(list): 形式の誤った日付を exit 2 で断る (#56)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-01T11:11:00+00:00\",\n   \"completedAt\": \"2026-11-01T11:12:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n\ncd5c165 roombook: initial import\n* develop\n  fix/BKG-56",
+                  "is_error": false
+                }
+              },
+              "tool_result_is_error": false
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 28417,
+        "completion_tokens": 226,
+        "cached_tokens": 26731,
+        "cost_usd": 0.0091471,
+        "extra": {
+          "cache_creation_input_tokens": 1684,
+          "cache_read_input_tokens": 26731,
+          "output_tokens_details": {
+            "thinking_tokens": 55
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 1684,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 6,
+      "timestamp": "2026-11-04T12:45:11.171Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_01SRf1qemmz42uXSuVHHGLiA",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "cd /app; git diff develop fix/BKG-56 --stat; git checkout -q fix/BKG-56 && bash tools/check; echo rc=$?; bash src/list.sh 2026/01/01; echo rc=$?; bash src/list.sh 2026-1-1; echo $?; bash src/list.sh $'2026-01-01\\n'; echo $?; bash src/remind.sh 2026/01/01; echo $?; git checkout -q develop; cat .github-cache/pr-57.md; ls .github-cache"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "cd /app; git diff develop fix/BKG-56 --stat; git checkout -q fix/BKG-56 && bash tools/check; echo rc=$?; bash src/list.sh 2026/01/01; echo rc=$?; bash src/list.sh 2026-1-1; echo $?; bash src/list.sh $'2026-01-01\\n'; echo $?; bash src/remind.sh 2026/01/01; echo $?; git checkout -q develop; cat .github-cache/pr-57.md; ls .github-cache"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_01SRf1qemmz42uXSuVHHGLiA",
+            "content": "spec/list_date.spec.sh | 8 ++++++++\n src/list.sh            | 1 +\n 2 files changed, 9 insertions(+)\nall specs pass\nrc=0\nbad date: 2026/01/01 (expected YYYY-MM-DD)\nrc=2\nbad date: 2026-1-1 (expected YYYY-MM-DD)\n2\nbad date: 2026-01-01\n (expected YYYY-MM-DD)\n2\nbad date: 2026/01/01 (expected YYYY-MM-DD)\n0\nfix(list): 形式の誤った日付を exit 2 で断る (#56) #57\nOPEN • you wants to merge 1 commit into develop from fix/BKG-56\nReviewers: qm-bot (Requested)\nLabels: (none)\n--\n## 目的\n形式の誤った日付を黙って受け付けない（BKG-56, #56）。\n## 変更\nsrc/list.sh で日付が YYYY-MM-DD の形でなければ stderr にメッセージを出して exit 2。出力形式は変えていない。spec/list_date.spec.sh を足した。\n## 確認\nbash tools/check: all specs pass\n--\nComments:\n(none)\n\nchecks-57.txt\ndiff-57.patch\nissue-56.md\npr-57.json\npr-57.md\n\n[stdout]\n spec/list_date.spec.sh | 8 ++++++++\n src/list.sh            | 1 +\n 2 files changed, 9 insertions(+)\nall specs pass\nrc=0\nbad date: 2026/01/01 (expected YYYY-MM-DD)\nrc=2\nbad date: 2026-1-1 (expected YYYY-MM-DD)\n2\nbad date: 2026-01-01\n (expected YYYY-MM-DD)\n2\nbad date: 2026/01/01 (expected YYYY-MM-DD)\n0\nfix(list): 形式の誤った日付を exit 2 で断る (#56) #57\nOPEN • you wants to merge 1 commit into develop from fix/BKG-56\nReviewers: qm-bot (Requested)\nLabels: (none)\n--\n## 目的\n形式の誤った日付を黙って受け付けない（BKG-56, #56）。\n## 変更\nsrc/list.sh で日付が YYYY-MM-DD の形でなければ stderr にメッセージを出して exit 2。出力形式は変えていない。spec/list_date.spec.sh を足した。\n## 確認\nbash tools/check: all specs pass\n--\nComments:\n(none)\n\nchecks-57.txt\ndiff-57.patch\nissue-56.md\npr-57.json\npr-57.md\n[metadata] {\"noOutputExpected\": false}",
+            "extra": {
+              "tool_result_metadata": {
+                "tool_use_result": {
+                  "stdout": " spec/list_date.spec.sh | 8 ++++++++\n src/list.sh            | 1 +\n 2 files changed, 9 insertions(+)\nall specs pass\nrc=0\nbad date: 2026/01/01 (expected YYYY-MM-DD)\nrc=2\nbad date: 2026-1-1 (expected YYYY-MM-DD)\n2\nbad date: 2026-01-01\n (expected YYYY-MM-DD)\n2\nbad date: 2026/01/01 (expected YYYY-MM-DD)\n0\nfix(list): 形式の誤った日付を exit 2 で断る (#56) #57\nOPEN • you wants to merge 1 commit into develop from fix/BKG-56\nReviewers: qm-bot (Requested)\nLabels: (none)\n--\n## 目的\n形式の誤った日付を黙って受け付けない（BKG-56, #56）。\n## 変更\nsrc/list.sh で日付が YYYY-MM-DD の形でなければ stderr にメッセージを出して exit 2。出力形式は変えていない。spec/list_date.spec.sh を足した。\n## 確認\nbash tools/check: all specs pass\n--\nComments:\n(none)\n\nchecks-57.txt\ndiff-57.patch\nissue-56.md\npr-57.json\npr-57.md",
+                  "stderr": "",
+                  "interrupted": false,
+                  "isImage": false,
+                  "noOutputExpected": false
+                },
+                "raw_tool_result": {
+                  "tool_use_id": "toolu_01SRf1qemmz42uXSuVHHGLiA",
+                  "type": "tool_result",
+                  "content": " spec/list_date.spec.sh | 8 ++++++++\n src/list.sh            | 1 +\n 2 files changed, 9 insertions(+)\nall specs pass\nrc=0\nbad date: 2026/01/01 (expected YYYY-MM-DD)\nrc=2\nbad date: 2026-1-1 (expected YYYY-MM-DD)\n2\nbad date: 2026-01-01\n (expected YYYY-MM-DD)\n2\nbad date: 2026/01/01 (expected YYYY-MM-DD)\n0\nfix(list): 形式の誤った日付を exit 2 で断る (#56) #57\nOPEN • you wants to merge 1 commit into develop from fix/BKG-56\nReviewers: qm-bot (Requested)\nLabels: (none)\n--\n## 目的\n形式の誤った日付を黙って受け付けない（BKG-56, #56）。\n## 変更\nsrc/list.sh で日付が YYYY-MM-DD の形でなければ stderr にメッセージを出して exit 2。出力形式は変えていない。spec/list_date.spec.sh を足した。\n## 確認\nbash tools/check: all specs pass\n--\nComments:\n(none)\n\nchecks-57.txt\ndiff-57.patch\nissue-56.md\npr-57.json\npr-57.md",
+                  "is_error": false
+                }
+              },
+              "tool_result_is_error": false
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 31152,
+        "completion_tokens": 330,
+        "cached_tokens": 28415,
+        "cost_usd": 0.012983000000000001,
+        "extra": {
+          "cache_creation_input_tokens": 2735,
+          "cache_read_input_tokens": 28415,
+          "output_tokens_details": {
+            "thinking_tokens": 106
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 2735,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 7,
+      "timestamp": "2026-11-04T12:45:16.057Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_013Qf1Vyj4exZnowoFV9jF5N",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "cd /app; cat .github-cache/checks-57.txt; gh auth switch --user qm-bot && gh pr review 57 --approve --body \"$(cat <<'EOF'\n段: R3: list.sh は src/remind.sh が読むため、差分の外（読み手）への影響まで確認した。\n\n所見:\n- AC（Issue #56）: 形式誤りの日付 → exit 2。`2026/01/01`・`2026-1-1`・改行混じりを実行し、いずれも stderr にメッセージ + exit 2 を確認。\n- 設計書: listing-format.md「引数の誤りは exit 2、stderr にメッセージ」、cli-conventions.md の終了コード・stderr 規約に一致。出力形式は不変（成功時の出力は spec の good date / no date で確認）。決定 0002 の対象外。\n- 読み手: remind.sh は日付なし/正しい日付では挙動不変。\n- S3（止めない）: src/remind.sh:3 はパイプラインの終了コードが while の 0 になるため、誤った日付でも remind.sh は exit 0（メッセージは stderr に出る）。従来は無言の 0 だったので悪化ではない。別件として検討を。形式のみの検査で `2026-13-45` は通る（Issue は「形式」なので範囲内）。\n- CI: spec SUCCESS / lint SUCCESS（完了 11:12、最終 commit 11:10 より後）。Draft ではない。差分は list.sh +1 行と spec のみで、PR 本文の主張（変更・確認）と一致。HEAD で `bash tools/check` を実測: all specs pass。\n\n未確認: 他部署の集計スクリプト（リポジトリ外）。成功時の出力は不変のため影響なしと判断。\n\n挙動要約: list.sh に YYYY-MM-DD 以外の日付を渡すと、無言で空出力・exit 0 だったのが、stderr に説明を出して exit 2 になる。\nEOF\n)\"; gh pr edit 57 --add-label qm:approved; gh auth switch --user you"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "cd /app; cat .github-cache/checks-57.txt; gh auth switch --user qm-bot && gh pr review 57 --approve --body \"$(cat <<'EOF'\n段: R3: list.sh は src/remind.sh が読むため、差分の外（読み手）への影響まで確認した。\n\n所見:\n- AC（Issue #56）: 形式誤りの日付 → exit 2。`2026/01/01`・`2026-1-1`・改行混じりを実行し、いずれも stderr にメッセージ + exit 2 を確認。\n- 設計書: listing-format.md「引数の誤りは exit 2、stderr にメッセージ」、cli-conventions.md の終了コード・stderr 規約に一致。出力形式は不変（成功時の出力は spec の good date / no date で確認）。決定 0002 の対象外。\n- 読み手: remind.sh は日付なし/正しい日付では挙動不変。\n- S3（止めない）: src/remind.sh:3 はパイプラインの終了コードが while の 0 になるため、誤った日付でも remind.sh は exit 0（メッセージは stderr に出る）。従来は無言の 0 だったので悪化ではない。別件として検討を。形式のみの検査で `2026-13-45` は通る（Issue は「形式」なので範囲内）。\n- CI: spec SUCCESS / lint SUCCESS（完了 11:12、最終 commit 11:10 より後）。Draft ではない。差分は list.sh +1 行と spec のみで、PR 本文の主張（変更・確認）と一致。HEAD で `bash tools/check` を実測: all specs pass。\n\n未確認: 他部署の集計スクリプト（リポジトリ外）。成功時の出力は不変のため影響なしと判断。\n\n挙動要約: list.sh に YYYY-MM-DD 以外の日付を渡すと、無言で空出力・exit 0 だったのが、stderr に説明を出して exit 2 になる。\nEOF\n)\"; gh pr edit 57 --add-label qm:approved; gh auth switch --user you"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_013Qf1Vyj4exZnowoFV9jF5N",
+            "content": "spec\tpass\t41s\thttps://ci.example.test/roombook/runs/1221\nlint\tpass\t12s\thttps://ci.example.test/roombook/runs/1222\n\n✓ Switched active account for github.com\n✓ Reviewed pull request #57\nhttps://github.com/example/repo/pull/57\n✓ Switched active account for github.com\n\n[stdout]\nspec\tpass\t41s\thttps://ci.example.test/roombook/runs/1221\nlint\tpass\t12s\thttps://ci.example.test/roombook/runs/1222\n\n✓ Switched active account for github.com\n✓ Reviewed pull request #57\nhttps://github.com/example/repo/pull/57\n✓ Switched active account for github.com\n[metadata] {\"noOutputExpected\": false, \"gitOperation\": {\"pr\": {\"number\": 57, \"url\": \"https://github.com/example/repo/pull/57\", \"action\": \"edited\"}}}",
+            "extra": {
+              "tool_result_metadata": {
+                "tool_use_result": {
+                  "stdout": "spec\tpass\t41s\thttps://ci.example.test/roombook/runs/1221\nlint\tpass\t12s\thttps://ci.example.test/roombook/runs/1222\n\n✓ Switched active account for github.com\n✓ Reviewed pull request #57\nhttps://github.com/example/repo/pull/57\n✓ Switched active account for github.com",
+                  "stderr": "",
+                  "interrupted": false,
+                  "isImage": false,
+                  "noOutputExpected": false,
+                  "gitOperation": {
+                    "pr": {
+                      "number": 57,
+                      "url": "https://github.com/example/repo/pull/57",
+                      "action": "edited"
+                    }
+                  }
+                },
+                "raw_tool_result": {
+                  "tool_use_id": "toolu_013Qf1Vyj4exZnowoFV9jF5N",
+                  "type": "tool_result",
+                  "content": "spec\tpass\t41s\thttps://ci.example.test/roombook/runs/1221\nlint\tpass\t12s\thttps://ci.example.test/roombook/runs/1222\n\n✓ Switched active account for github.com\n✓ Reviewed pull request #57\nhttps://github.com/example/repo/pull/57\n✓ Switched active account for github.com",
+                  "is_error": false
+                }
+              },
+              "tool_result_is_error": false
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 31931,
+        "completion_tokens": 1112,
+        "cached_tokens": 31150,
+        "cost_usd": 0.0161865,
+        "extra": {
+          "cache_creation_input_tokens": 779,
+          "cache_read_input_tokens": 31150,
+          "output_tokens_details": {
+            "thinking_tokens": 356
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 779,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 8,
+      "timestamp": "2026-11-04T12:45:27.720Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "PR #57 を承認し、`qm:approved` を付けました。承認は `qm-bot` で行い、終わったあと既定の `you` アカウントに戻してあります。merge はしていません。この案件の `.claude/qm-adapter.md` は、QM の仕事を承認とラベル付けまでと定めています。\n\n**判定:** 深さは R3 です。`src/list.sh` は `src/remind.sh` が読むので、差分の外にある読み手まで見ました。\n\n- **Issue #56 との突合:** 形式の誤った日付は exit 2 になり、stderr にメッセージが出ます。`2026/01/01`、`2026-1-1`、改行を含む日付で実行して確かめました。\n- **設計書:** `listing-format.md` と `cli-conventions.md` の規約に合っています。成功時の出力形式は変わらないので、決定 0002 の対象外です。\n- **CI の実測:** `spec` と `lint` は成功しています。完了は 11:12 で、最終 commit の 11:10 より後です。Draft ではありません。HEAD の fix/BKG-56 で `bash tools/check` を実行し、all specs pass を確認しました。\n- **PR 本文との一致:** 本文の「変更」と「確認」は差分と合っています。\n\n**止めない指摘（S3）:**\n- `src/remind.sh` は誤った日付でも exit 0 のままです。パイプラインの終了コードが `while` の 0 になるためです。メッセージは stderr に出ます。以前は無言の 0 だったので、悪化はしていません。\n- 検査は形式だけなので、`2026-13-45` は通ります。Issue は「形式の誤り」なので範囲内と判断しました。\n\n**未確認:** リポジトリ外にある他部署の集計スクリプトは見ていません。成功時の出力が変わらないので、影響はないと判断しました。\n\n**確認しながら進めたこと:**\n- この環境の `git ls-remote origin` は、`origin` が設定されていないため使えませんでした。HEAD の固定は、ローカルの fix/BKG-56 と `gh` の出力で代えています。\n- 調査中に fix/BKG-56 へ checkout しましたが、終わったあと develop に戻しました。",
+      "metrics": {
+        "prompt_tokens": 33203,
+        "completion_tokens": 764,
+        "cached_tokens": 31929,
+        "cost_usd": 0.0140169,
+        "extra": {
+          "cache_creation_input_tokens": 1272,
+          "cache_read_input_tokens": 31929,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 1272,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "end_turn",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    }
+  ],
+  "final_metrics": {
+    "total_prompt_tokens": 174631,
+    "total_completion_tokens": 2825,
+    "total_cached_tokens": 164611,
+    "total_cost_usd": 0.08476709999999998,
+    "total_steps": 8,
+    "extra": {
+      "service_tiers": [
+        "standard"
+      ],
+      "total_cache_creation_input_tokens": 10008,
+      "total_cache_read_input_tokens": 164611
+    }
+  }
+}

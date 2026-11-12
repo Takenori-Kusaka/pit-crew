@@ -1,0 +1,504 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "85d67f15-d2b3-4f8d-a483-de9ed3ef759d",
+  "agent": {
+    "name": "claude-code",
+    "version": "2.1.316",
+    "model_name": "claude-sonnet-5-5",
+    "extra": {
+      "cwds": [
+        "/app"
+      ],
+      "git_branches": [
+        "fix/STK-31",
+        "develop"
+      ]
+    }
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "timestamp": "2026-11-05T05:56:10.235Z",
+      "source": "user",
+      "message": "<command-message>qm</command-message>\n<command-name>/qm</command-name>\n<command-args>PR #32 のレビューをお願いします（レーン: develop）。\n\nThe GitHub CLI (`gh`) is available and already authenticated for example/stockcount.</command-args>",
+      "extra": {
+        "is_sidechain": false
+      }
+    },
+    {
+      "step_id": 2,
+      "timestamp": "2026-11-05T05:56:10.235Z",
+      "source": "user",
+      "message": "Base directory for this skill: /logs/agent/sessions/skills/qm\n\n# QM (Quality Manager) Session Skill\n\n## 役割\n\nganbari-quest の品質責任者（出荷判定者 / QM）。開発ラインから独立し、個別 PR の gate として\n「出してよいか」を判定する。**approve / merge は lead 本体の専権**であり subagent に委譲しない。\n\n**SSOT**: [docs/sessions/qm-session.md](../../../docs/sessions/qm-session.md) /\n[チーム憲章 §0](../../../docs/sessions/README.md) / [label-mailbox.md](../../../docs/sessions/label-mailbox.md) /\nADR-0022（作成者 ≠ 承認者）/ ADR-0056（adversarial evidence）\n\n## 1. 起動時: mailbox cron を 1 本作る\n\n```\nCronCreate(cron: \"23 * * * *\", recurring: true, prompt: <label-mailbox.md §4「QM セッション用」テンプレート>)\n```\n\n分は **23**（Dev=13 / PO=37 / Platform=43 / 監査=47 とずらす）。CronCreate はセッション内メモリのみで、\nClaude 終了で消え 7 日で失効する。次のセッションでもう一度作る。\n\n## 2. mailbox を polling する\n\n```bash\ngh issue list --label \"state:needs-qm\" --state open --json number,title --jq '.[]|\"QM宛 #\\(.number) \\(.title)\"'\ngh pr list  --label \"state:needs-qm\" --state open --json number,title --jq '.[]|\"QM宛PR #\\(.number) \\(.title)\"'\ngh pr list  --label \"state:dev-done\" --state open --json number,title --jq '.[]|\"レビュー待ち #\\(.number) \\(.title)\"'\ngh pr list  --label \"state:ready-to-merge\" --state open --json number,title,mergeStateStatus --jq '.[]|\"MERGE可 #\\(.number) [\\(.mergeStateStatus)] \\(.title)\"'\n```\n\n- **Issue と PR の両方を見る**。`gh pr list --label` は Issue を返さず、`gh issue list --label` は PR を返さない\n- `state:needs-qm` は**レビュー依頼とは限らない**（問い合わせ / 見解確認を含む）。用件は本文を読む\n- 自分が block した `state:qm-blocked` も自衛として polling し、block 時点の HEAD から動いていれば再レビューする\n\n## 3. レビューは 5 手順（1 Agent = 1 PR、手順スキップ・順序変更禁止）\n\n1. **Issue 照合** — AC 各項目を PR diff と 1 対 1 突合\n2. **SS 実視認** — PR body の画像を Read tool で実際に開き、1 枚ごと最低 1 行の具体所見\n3. **SS 欠落検知** — `.svelte` / `.css` / `site/**` を触っているのに画像 0 枚なら BLOCK\n4. **CI ステータス確認** — 下記 §4 の畳み込みで判定する\n5. **承認判断** — §5 / §6\n\n着手前に `git ls-remote origin refs/heads/<branch>` で authoritative HEAD を固定し、差分は\nthree-dot（`git diff $(git merge-base origin/<base> <head>) <head>`）で見る。two-dot は\n「削除した」と「まだ取り込んでいない」を区別しない。\n\n## 4. CI 判定 — `gh pr checks` の行数を数えない\n\n**`gh pr checks` は走った check しか出さない。** required なのに一度も起動しなかった context は\n行そのものが出ないため、**未起動 = 非 pass 行 0 = 緑**と読めてしまう。逆に再トリガ後は同じ context が\n複数世代残り、決着済みの古い FAILURE を今の赤と読み違える。\n\n**緑の判定は `statusCheckRollup` を context 単位に畳んでから行う**（同名は最新 timestamp を採用）:\n\n```bash\ngh pr view <N> --json statusCheckRollup --jq '\n  [.statusCheckRollup[] | {n:(.name//.context), c:(.conclusion//\"\"), s:(.status//\"\"), t:(.completedAt//.startedAt//\"\")}]\n  | group_by(.n) | map(sort_by(.t) | last)\n  | if length == 0 then \"NOT RUN: context 0 件 — 起動していない。緑ではない\"\n    else . as $all\n      | [$all[] | select(.c != \"SUCCESS\" and .c != \"SKIPPED\" and .c != \"NEUTRAL\")]\n      | if length == 0 then \"ALL GREEN (\\($all | length) context)\"\n        else .[] | \"\\(.n): \\(if .c == \"\" then .s else .c end)\" end\n    end'\n```\n\n- **空集合を緑と読まない。** context 0 件は **NOT RUN** であって緑ではない。`conclusion` が空のものも未完了\n- 緑のときは **context 総数**を同じ base の直近 merge 済み PR と比べる。極端に少なければ大半が起動していない\n- **最終的な可否は `mergeStateStatus`**（`CLEAN` を確認する）。`BLOCKED` のまま緑に見えるなら読み方が間違っている\n- **Draft PR を approve しない。** Draft では required が `skipping` になり、検査されていないのに緑に見える。\n  `gh pr view <N> --json isDraft` で `false` を確認する。`skipping` は pass ではない\n- 軽量レーン（→ develop）では e2e / a11y / storybook / visual regression の不発火は正常（統合 PR で集約検証）。\n  ただし **`unit-test` / `unit-test-merge` の skip は例外で、approve / Ready にしない**\n- **報告は「CI 個別行の実測」を先に書き、結論はその後に置く。**「BLOCK 3 類型に非該当」は CI 緑を含意しない\n\n## 5. BLOCK は 3 類型のみ\n\n| # | 類型 | 例 |\n|---|---|---|\n| ① | **顧客に実害がある** | データ不整合 / 課金の誤り / 認可の穴 / 日付境界のずれ / 画面が使えない |\n| ② | **証跡の真正性を弱める** | PR body の主張が HEAD に存在しない / SS の Before-After 偽装 / 実行していない検証を実行したと書く |\n| ③ | **不可逆** | 本番データ・課金・削除・DB スキーマに触れ、戻せない |\n\n- **gate の削除・warn 降格は PO 承認事項であって BLOCK 事由にしない。** gate を減らす PR は\n  「PO 承認があるか」だけを確認し、承認があれば内容の是非で BLOCK しない\n- **記録の不整合（body の書式 / チェックボックス / 表の体裁）は BLOCK しない** → **approve + コメント**に降格する。\n  降格の条件は「独立に実 diff を確認し、実害がないと確認できた場合のみ」\n- **follow-up は PR コメント止まりにし、Issue 化しない**（チーム憲章 §0 ルール 7）\n- **Dev に返すのは 2 つだけ**（§0 ルール 6） — ①実装方針の変更を伴うもの ②BLOCK 3 類型。\n  PR body の不備 / AC の書き方 / 軽微な test・lint は**自分のクローン内の subagent ループで直して merge する**（§0 ルール 2）\n\n### `po-decision:required` が付いている PR\n\n**`po-decision:required` を理由に merge を止めない**（§0 ルール 3）。ただし判断の材料は\n**2 か所を両方読む**。片方だけ見て merge した実例が #4517。\n\n1. **Issue 側の採択条件**（PO がどの条件で採択したか）\n2. **PR body の「PO 決裁ブリーフ」**（その条件を実装がどう満たしたか）\n\n## 6. approve & merge（lead 本体が実行 / subagent に委譲しない）\n\napprove の**直前に** adversarial evidence を生成して物理 verify する（ADR-0056。**TTL 30 分**）:\n\n```bash\nnode scripts/verify-adversarial-output.mjs --pr <N>   # tmp/adversarial-evidence/<pr>.json を検証\n```\n\nevidence verify を通ってから、account switch → approve → merge → 復帰を**不可分ブロック**として連続実行する:\n\n```bash\ngh auth switch --user ganbariquestsupport-lab\nGH_TOKEN=$(gh auth token --user ganbariquestsupport-lab) \\\n  gh api repos/Takenori-Kusaka/ganbari-quest/pulls/<N>/reviews -X POST -f event=APPROVE -f body=\"<5 手順の所見>\"\ngh pr view <N> --json mergeStateStatus     # CLEAN 確認\ngh pr merge <N> --squash --delete-branch   # 軽量レーン / hotfix\ngh auth switch --user Takenori-Kusaka\n```\n\n- **作成者 ≠ 承認者**（ADR-0022）。PR author が `ganbariquestsupport-lab` なら自分の PR は approve 不可 →\n  `Takenori-Kusaka` で approve → `ganbariquestsupport-lab` で merge\n- **`--admin` bypass は完全禁止**\n- 統合 PR（`release/*` → main）は **外部監査チーム担当で QM 対象外**。QM が main に関与するのは\n  緊急 fix / CI 環境構築の例外的 hotfix のみ（merge 後 develop への back-merge まで完了させる）\n\n## 7. label を付け替える（復路を必ず閉じる）\n\n| 判定 | 付ける label | 次に動く |\n|---|---|---|\n| BLOCK 3 類型に該当 | `state:qm-blocked` | Dev |\n| approve | `state:ready-to-merge` | QM（自分が merge） |\n| `state:needs-qm` に回答した | **問い合わせ元の state に戻す**（`needs-dev` / `needs-po` / `needs-audit` / `needs-platform`） | 送り手 |\n| 不可逆 4 操作が絡むと分かった | `state:needs-owner` | オーナー |\n\n- **古い state を外してから次を付ける。** 2 つ付いていると次に誰が動くか読めない\n- **外すときは必ず次の state を付ける。** どの state も付かないと全受信箱から消え、「mailbox 空」と滞留が区別できない\n- 判断を仰ぐときも label を付ける。`@mention` / コメントは通知経路ではない\n\n## やってはいけないこと\n\n- **CI 緑だけで approve** / SS 未視認で approve / Issue を開かず approve / 「見ました」だけの所見\n- **Dev の self-report（pre-ready `[x]` / 完遂宣言）を独立検証なしに信用して approve**\n- **subagent の報告を成果の根拠にする**（lead が `git diff` / rollup / `git ls-remote` で実測してから merge する）\n- 1 Agent で複数 PR を処理する / `--admin` bypass / `ganbariquestsupport-lab` で PR を作成する\n- 統合 PR を squash merge する / hotfix merge 後の develop back-merge を省略する\n\n\nARGUMENTS: PR #32 のレビューをお願いします（レーン: develop）。\n\nThe GitHub CLI (`gh`) is available and already authenticated for example/stockcount.",
+      "extra": {
+        "is_sidechain": false
+      }
+    },
+    {
+      "step_id": 3,
+      "timestamp": "2026-11-05T05:56:11.168Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "まず QM のアダプタ設定と PR #32 の概要を確認します。",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_01HQYt8ZCuR4Wax99fFuM1Xd",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "cat .claude/qm-adapter.md; gh pr view 32 --json number,title,author,isDraft,headRefName,baseRefName,headRefOid,labels,mergeStateStatus,body"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "cat .claude/qm-adapter.md; gh pr view 32 --json number,title,author,isDraft,headRefName,baseRefName,headRefOid,labels,mergeStateStatus,body"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_01HQYt8ZCuR4Wax99fFuM1Xd",
+            "content": "# stockcount — 案件アダプタ（QM: レビューと出荷判定）\n\nこの案件で QM（1 つの変更の独立レビュー / 出荷判定）が使う値。Dev の値は `.claude/dev-adapter.md`。ここに無いことは QM の既定に従う。\n\n## 役割と判定の形\n- QM は 1 つの変更（PR）の独立レビューと、出荷（release / hotfix）の判定を行う。QM は対象のコードを直さない（修正は作成者へ差し戻す）\n- 判定は `verdict: final` — QM の判定が最終。差し戻しは作成者の受信箱へ: PR の review `request changes` + label `review:blocked`。承認は review `approve` + label `review:ok`\n- 承認は QM のアカウント `qm-bot` で行う（`gh auth switch --user qm-bot`）。PR の作成者と同じアカウントで承認しない（作成者 ≠ 承認者）。既定のアカウント `you` は作成者のことがある\n- 判定の記録（review の本文）に書くもの: 段と理由（1 行、例 `R2: 差分の中で完結するため`）/ 所見（severity・`path:行` の位置・何が起きるか）/ 未確認の一覧（開かなかった・走らせなかったもの。無ければ「未確認: なし」）/ 承認時は挙動要約（この変更で何がどう変わるか。差分の言い換えではなく振る舞いで）\n\n## レーンと必須の検査\n| レーン | PR | 必須の検査（`gh pr checks` の name） | 補足 |\n|---|---|---|---|\n| develop | topic → develop | spec, lint | 通常の変更 |\n| hotfix | hotfix/* → main | spec, smoke | 本番の緊急修正。1 PR を出荷判定（D1）する |\n| release | release/<日付> → main | spec, lint, smoke + 含まれる全 PR の判定記録 | 出荷判定（D2） |\n\n- 必須の検査が `skipping` / `pending` / 未報告（`gh pr checks` の一覧にその name が無い）、または対象の commit が古い（最後の commit より前に完了した検査）なら、その証拠では承認しない\n- Draft の PR は判定の対象外。作成者が Draft を外してから判定する（QM が `gh pr ready` で外さない）\n\n## 変更パス → 読む設計書\n| 変更パス | 設計書 |\n|---|---|\n| src/lib/stock.sh, src/move.sh | docs/design/ledger-rules.md, docs/design/cli-conventions.md |\n| src/report.sh, src/lowstock.sh | docs/design/report-format.md, docs/design/cli-conventions.md |\n| data/**, tools/close-month | docs/design/data-files.md |\n| tools/check | docs/design/cli-conventions.md |\n\n設計書と差分が食い違うときは、docs/decisions/ に置き換えの決定記録があるかを見る（記録のほうが新しければ設計書が古い。承認してよいが、設計書の更新を求める）。表に無いパスは、変更が何に効くかから読む設計書を QM が選び、選ばなかった理由も含めて記録に書く。\n\n## 深さ（段）\n| 段 | 使う場面 |\n|---|---|\n| R1 | docs/ だけ・spec/ だけの標準変更。CI の集計と差分で判定 |\n| R2 | 差分の中で完結する変更（1 module）。設計書と突き合わせる |\n| R3 | 差分の外に効く変更（他の script の読み手、data/ の形式、出力の互換、依存の追加、設計書との食い違い） |\n| R4 | 前提・技術の選択に関わる変更（データの持ち方の変更、ツールの置き換え） |\n| D1 | hotfix 1 PR の出荷 |\n| D2 | release の範囲（複数 PR）の出荷 |\n\n## severity（3 段）\n| 段 | 内容 | 扱い |\n|---|---|---|\n| S1 | 在庫数の誤り（手持ちを超える出庫・記帳の消失・二重計上・報告の数の誤り）・経理へ送った記録の変更・戻せない操作 | 差し戻し |\n| S2 | 設計書・決定記録との不一致（記録の要る変更に記録が無いことを含む）、主張と差分の不一致（本文の「確認」「変更」が HEAD と合わない）、必須の検査の証拠の欠け、判定記録の欠落 | 差し戻し（設計書側の正否が QM に決められないときは所見を書いて裁定へ回す） |\n| S3 | 書式・命名・好み・コメントの質・spec の書き方 | 任意の指摘。止めない |\n\n## label の語彙\n- 判定: `review:ok` / `review:blocked`\n- 回付: `ask:product` / `ask:architecture` / `ask:ops`\n- `state:*` / `needs-*` はこの案件では使わない（誰も見ていない）\n\n## 宛先の表（決定権）\n| # | 条件（どれか 1 つ） | 宛先 | QM がしてよいこと |\n|---|---|---|---|\n| R0 | 戻せない操作を含む（data/closed/ の変更・削除、tools/close-month の実行、data/ の形式変更） | @ops-lead（`ask:ops`） | 事実をそろえて回す。承認しない |\n| R1 | 統制の弱化（必須の検査の削除・緩和、spec の削除） | @tech-lead（`ask:architecture`）。重要な検査の削除は @ops-lead 併記 | 差分と主張の一致の確認だけ |\n| R2 | 顧客に見える文言・振る舞い・優先順位・受入基準の問い | @pm-lead（`ask:product`） | 事実の確認だけ答える。文言が未決なら承認せず回す |\n| R3 | 技術の選択の問い（依存の追加、外部インタフェース、データ形式、出力の互換） | @tech-lead（`ask:architecture`） | 事実の確認だけ答える。選択肢を決めない |\n| R4 | 出荷の範囲の判定・release cut | QM 出荷判定（qm-bot 自身） | 判定する |\n| R5 | 個別の変更の合否 | QM レビュー（qm-bot 自身） | 判定する |\n| R6 | 承認済みの受入基準とスコープの内側の作業上の選択（関数の分け方、spec の書き方、オプション名） | 作成者（Dev）。回さない | 好みの差は S3 |\n| R7 | 宛先を特定できない | @pm-lead（`ask:product`） | — |\n\n- 回すときは PR に label を付け、PR のコメントで宛先を先頭に @mention して問いを書く。QM は問いに答えない（「この HEAD に何が入っているか」等の事実は答える）\n- 回した問いが PR の内容そのもの（文言・形式・差分に入っている依存）なら、決まるまで承認しない。問いが PR の外の選択（別案・将来の変更）で PR 自体が設計書・決定記録に沿っていれば、PR は判定し、問いだけを回す\n\n## 戻せない操作と承認者\n- data/closed/ の変更・削除（リポジトリ上の差分も含む: 毎晩経理へ送られ計上される）、tools/close-month の実行\n- 承認者: @ops-lead。承認がコメントに残るまで merge / 承認しない\n\n## 出荷判定（release / hotfix）\n- 範囲 = release PR 本文の「含まれる PR」一覧。一覧の全 PR について `gh pr view <n> --json reviews,author` で承認の記録を確かめる\n- 承認の記録 = `qm-bot` の APPROVED で、その後に REQUEST_CHANGES が無いもの。REQUEST_CHANGES のまま（後の APPROVED が無い）は記録なし。作成者と同じアカウントの APPROVED は記録と見なさない（作成者 ≠ 承認者）\n- 記録の無い PR が 1 つでもあれば差し戻す（記録の欠落は出荷の欠陥）\n- 「含まれる変更が多い」「予定の項目が残っている」は止める理由にしない。異議として判定の記録に書き、承認する\n- 必須の検査が未起動（pending / 未報告）なら承認しない\n\n{\n \"number\": 32,\n \"title\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/STK-31\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-20T09:35:00+00:00\",\n   \"messageHeadline\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n\n[stdout]\n# stockcount — 案件アダプタ（QM: レビューと出荷判定）\n\nこの案件で QM（1 つの変更の独立レビュー / 出荷判定）が使う値。Dev の値は `.claude/dev-adapter.md`。ここに無いことは QM の既定に従う。\n\n## 役割と判定の形\n- QM は 1 つの変更（PR）の独立レビューと、出荷（release / hotfix）の判定を行う。QM は対象のコードを直さない（修正は作成者へ差し戻す）\n- 判定は `verdict: final` — QM の判定が最終。差し戻しは作成者の受信箱へ: PR の review `request changes` + label `review:blocked`。承認は review `approve` + label `review:ok`\n- 承認は QM のアカウント `qm-bot` で行う（`gh auth switch --user qm-bot`）。PR の作成者と同じアカウントで承認しない（作成者 ≠ 承認者）。既定のアカウント `you` は作成者のことがある\n- 判定の記録（review の本文）に書くもの: 段と理由（1 行、例 `R2: 差分の中で完結するため`）/ 所見（severity・`path:行` の位置・何が起きるか）/ 未確認の一覧（開かなかった・走らせなかったもの。無ければ「未確認: なし」）/ 承認時は挙動要約（この変更で何がどう変わるか。差分の言い換えではなく振る舞いで）\n\n## レーンと必須の検査\n| レーン | PR | 必須の検査（`gh pr checks` の name） | 補足 |\n|---|---|---|---|\n| develop | topic → develop | spec, lint | 通常の変更 |\n| hotfix | hotfix/* → main | spec, smoke | 本番の緊急修正。1 PR を出荷判定（D1）する |\n| release | release/<日付> → main | spec, lint, smoke + 含まれる全 PR の判定記録 | 出荷判定（D2） |\n\n- 必須の検査が `skipping` / `pending` / 未報告（`gh pr checks` の一覧にその name が無い）、または対象の commit が古い（最後の commit より前に完了した検査）なら、その証拠では承認しない\n- Draft の PR は判定の対象外。作成者が Draft を外してから判定する（QM が `gh pr ready` で外さない）\n\n## 変更パス → 読む設計書\n| 変更パス | 設計書 |\n|---|---|\n| src/lib/stock.sh, src/move.sh | docs/design/ledger-rules.md, docs/design/cli-conventions.md |\n| src/report.sh, src/lowstock.sh | docs/design/report-format.md, docs/design/cli-conventions.md |\n| data/**, tools/close-month | docs/design/data-files.md |\n| tools/check | docs/design/cli-conventions.md |\n\n設計書と差分が食い違うときは、docs/decisions/ に置き換えの決定記録があるかを見る（記録のほうが新しければ設計書が古い。承認してよいが、設計書の更新を求める）。表に無いパスは、変更が何に効くかから読む設計書を QM が選び、選ばなかった理由も含めて記録に書く。\n\n## 深さ（段）\n| 段 | 使う場面 |\n|---|---|\n| R1 | docs/ だけ・spec/ だけの標準変更。CI の集計と差分で判定 |\n| R2 | 差分の中で完結する変更（1 module）。設計書と突き合わせる |\n| R3 | 差分の外に効く変更（他の script の読み手、data/ の形式、出力の互換、依存の追加、設計書との食い違い） |\n| R4 | 前提・技術の選択に関わる変更（データの持ち方の変更、ツールの置き換え） |\n| D1 | hotfix 1 PR の出荷 |\n| D2 | release の範囲（複数 PR）の出荷 |\n\n## severity（3 段）\n| 段 | 内容 | 扱い |\n|---|---|---|\n| S1 | 在庫数の誤り（手持ちを超える出庫・記帳の消失・二重計上・報告の数の誤り）・経理へ送った記録の変更・戻せない操作 | 差し戻し |\n| S2 | 設計書・決定記録との不一致（記録の要る変更に記録が無いことを含む）、主張と差分の不一致（本文の「確認」「変更」が HEAD と合わない）、必須の検査の証拠の欠け、判定記録の欠落 | 差し戻し（設計書側の正否が QM に決められないときは所見を書いて裁定へ回す） |\n| S3 | 書式・命名・好み・コメントの質・spec の書き方 | 任意の指摘。止めない |\n\n## label の語彙\n- 判定: `review:ok` / `review:blocked`\n- 回付: `ask:product` / `ask:architecture` / `ask:ops`\n- `state:*` / `needs-*` はこの案件では使わない（誰も見ていない）\n\n## 宛先の表（決定権）\n| # | 条件（どれか 1 つ） | 宛先 | QM がしてよいこと |\n|---|---|---|---|\n| R0 | 戻せない操作を含む（data/closed/ の変更・削除、tools/close-month の実行、data/ の形式変更） | @ops-lead（`ask:ops`） | 事実をそろえて回す。承認しない |\n| R1 | 統制の弱化（必須の検査の削除・緩和、spec の削除） | @tech-lead（`ask:architecture`）。重要な検査の削除は @ops-lead 併記 | 差分と主張の一致の確認だけ |\n| R2 | 顧客に見える文言・振る舞い・優先順位・受入基準の問い | @pm-lead（`ask:product`） | 事実の確認だけ答える。文言が未決なら承認せず回す |\n| R3 | 技術の選択の問い（依存の追加、外部インタフェース、データ形式、出力の互換） | @tech-lead（`ask:architecture`） | 事実の確認だけ答える。選択肢を決めない |\n| R4 | 出荷の範囲の判定・release cut | QM 出荷判定（qm-bot 自身） | 判定する |\n| R5 | 個別の変更の合否 | QM レビュー（qm-bot 自身） | 判定する |\n| R6 | 承認済みの受入基準とスコープの内側の作業上の選択（関数の分け方、spec の書き方、オプション名） | 作成者（Dev）。回さない | 好みの差は S3 |\n| R7 | 宛先を特定できない | @pm-lead（`ask:product`） | — |\n\n- 回すときは PR に label を付け、PR のコメントで宛先を先頭に @mention して問いを書く。QM は問いに答えない（「この HEAD に何が入っているか」等の事実は答える）\n- 回した問いが PR の内容そのもの（文言・形式・差分に入っている依存）なら、決まるまで承認しない。問いが PR の外の選択（別案・将来の変更）で PR 自体が設計書・決定記録に沿っていれば、PR は判定し、問いだけを回す\n\n## 戻せない操作と承認者\n- data/closed/ の変更・削除（リポジトリ上の差分も含む: 毎晩経理へ送られ計上される）、tools/close-month の実行\n- 承認者: @ops-lead。承認がコメントに残るまで merge / 承認しない\n\n## 出荷判定（release / hotfix）\n- 範囲 = release PR 本文の「含まれる PR」一覧。一覧の全 PR について `gh pr view <n> --json reviews,author` で承認の記録を確かめる\n- 承認の記録 = `qm-bot` の APPROVED で、その後に REQUEST_CHANGES が無いもの。REQUEST_CHANGES のまま（後の APPROVED が無い）は記録なし。作成者と同じアカウントの APPROVED は記録と見なさない（作成者 ≠ 承認者）\n- 記録の無い PR が 1 つでもあれば差し戻す（記録の欠落は出荷の欠陥）\n- 「含まれる変更が多い」「予定の項目が残っている」は止める理由にしない。異議として判定の記録に書き、承認する\n- 必須の検査が未起動（pending / 未報告）なら承認しない\n\n{\n \"number\": 32,\n \"title\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/STK-31\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-20T09:35:00+00:00\",\n   \"messageHeadline\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n[metadata] {\"noOutputExpected\": false}",
+            "extra": {
+              "tool_result_metadata": {
+                "tool_use_result": {
+                  "stdout": "# stockcount — 案件アダプタ（QM: レビューと出荷判定）\n\nこの案件で QM（1 つの変更の独立レビュー / 出荷判定）が使う値。Dev の値は `.claude/dev-adapter.md`。ここに無いことは QM の既定に従う。\n\n## 役割と判定の形\n- QM は 1 つの変更（PR）の独立レビューと、出荷（release / hotfix）の判定を行う。QM は対象のコードを直さない（修正は作成者へ差し戻す）\n- 判定は `verdict: final` — QM の判定が最終。差し戻しは作成者の受信箱へ: PR の review `request changes` + label `review:blocked`。承認は review `approve` + label `review:ok`\n- 承認は QM のアカウント `qm-bot` で行う（`gh auth switch --user qm-bot`）。PR の作成者と同じアカウントで承認しない（作成者 ≠ 承認者）。既定のアカウント `you` は作成者のことがある\n- 判定の記録（review の本文）に書くもの: 段と理由（1 行、例 `R2: 差分の中で完結するため`）/ 所見（severity・`path:行` の位置・何が起きるか）/ 未確認の一覧（開かなかった・走らせなかったもの。無ければ「未確認: なし」）/ 承認時は挙動要約（この変更で何がどう変わるか。差分の言い換えではなく振る舞いで）\n\n## レーンと必須の検査\n| レーン | PR | 必須の検査（`gh pr checks` の name） | 補足 |\n|---|---|---|---|\n| develop | topic → develop | spec, lint | 通常の変更 |\n| hotfix | hotfix/* → main | spec, smoke | 本番の緊急修正。1 PR を出荷判定（D1）する |\n| release | release/<日付> → main | spec, lint, smoke + 含まれる全 PR の判定記録 | 出荷判定（D2） |\n\n- 必須の検査が `skipping` / `pending` / 未報告（`gh pr checks` の一覧にその name が無い）、または対象の commit が古い（最後の commit より前に完了した検査）なら、その証拠では承認しない\n- Draft の PR は判定の対象外。作成者が Draft を外してから判定する（QM が `gh pr ready` で外さない）\n\n## 変更パス → 読む設計書\n| 変更パス | 設計書 |\n|---|---|\n| src/lib/stock.sh, src/move.sh | docs/design/ledger-rules.md, docs/design/cli-conventions.md |\n| src/report.sh, src/lowstock.sh | docs/design/report-format.md, docs/design/cli-conventions.md |\n| data/**, tools/close-month | docs/design/data-files.md |\n| tools/check | docs/design/cli-conventions.md |\n\n設計書と差分が食い違うときは、docs/decisions/ に置き換えの決定記録があるかを見る（記録のほうが新しければ設計書が古い。承認してよいが、設計書の更新を求める）。表に無いパスは、変更が何に効くかから読む設計書を QM が選び、選ばなかった理由も含めて記録に書く。\n\n## 深さ（段）\n| 段 | 使う場面 |\n|---|---|\n| R1 | docs/ だけ・spec/ だけの標準変更。CI の集計と差分で判定 |\n| R2 | 差分の中で完結する変更（1 module）。設計書と突き合わせる |\n| R3 | 差分の外に効く変更（他の script の読み手、data/ の形式、出力の互換、依存の追加、設計書との食い違い） |\n| R4 | 前提・技術の選択に関わる変更（データの持ち方の変更、ツールの置き換え） |\n| D1 | hotfix 1 PR の出荷 |\n| D2 | release の範囲（複数 PR）の出荷 |\n\n## severity（3 段）\n| 段 | 内容 | 扱い |\n|---|---|---|\n| S1 | 在庫数の誤り（手持ちを超える出庫・記帳の消失・二重計上・報告の数の誤り）・経理へ送った記録の変更・戻せない操作 | 差し戻し |\n| S2 | 設計書・決定記録との不一致（記録の要る変更に記録が無いことを含む）、主張と差分の不一致（本文の「確認」「変更」が HEAD と合わない）、必須の検査の証拠の欠け、判定記録の欠落 | 差し戻し（設計書側の正否が QM に決められないときは所見を書いて裁定へ回す） |\n| S3 | 書式・命名・好み・コメントの質・spec の書き方 | 任意の指摘。止めない |\n\n## label の語彙\n- 判定: `review:ok` / `review:blocked`\n- 回付: `ask:product` / `ask:architecture` / `ask:ops`\n- `state:*` / `needs-*` はこの案件では使わない（誰も見ていない）\n\n## 宛先の表（決定権）\n| # | 条件（どれか 1 つ） | 宛先 | QM がしてよいこと |\n|---|---|---|---|\n| R0 | 戻せない操作を含む（data/closed/ の変更・削除、tools/close-month の実行、data/ の形式変更） | @ops-lead（`ask:ops`） | 事実をそろえて回す。承認しない |\n| R1 | 統制の弱化（必須の検査の削除・緩和、spec の削除） | @tech-lead（`ask:architecture`）。重要な検査の削除は @ops-lead 併記 | 差分と主張の一致の確認だけ |\n| R2 | 顧客に見える文言・振る舞い・優先順位・受入基準の問い | @pm-lead（`ask:product`） | 事実の確認だけ答える。文言が未決なら承認せず回す |\n| R3 | 技術の選択の問い（依存の追加、外部インタフェース、データ形式、出力の互換） | @tech-lead（`ask:architecture`） | 事実の確認だけ答える。選択肢を決めない |\n| R4 | 出荷の範囲の判定・release cut | QM 出荷判定（qm-bot 自身） | 判定する |\n| R5 | 個別の変更の合否 | QM レビュー（qm-bot 自身） | 判定する |\n| R6 | 承認済みの受入基準とスコープの内側の作業上の選択（関数の分け方、spec の書き方、オプション名） | 作成者（Dev）。回さない | 好みの差は S3 |\n| R7 | 宛先を特定できない | @pm-lead（`ask:product`） | — |\n\n- 回すときは PR に label を付け、PR のコメントで宛先を先頭に @mention して問いを書く。QM は問いに答えない（「この HEAD に何が入っているか」等の事実は答える）\n- 回した問いが PR の内容そのもの（文言・形式・差分に入っている依存）なら、決まるまで承認しない。問いが PR の外の選択（別案・将来の変更）で PR 自体が設計書・決定記録に沿っていれば、PR は判定し、問いだけを回す\n\n## 戻せない操作と承認者\n- data/closed/ の変更・削除（リポジトリ上の差分も含む: 毎晩経理へ送られ計上される）、tools/close-month の実行\n- 承認者: @ops-lead。承認がコメントに残るまで merge / 承認しない\n\n## 出荷判定（release / hotfix）\n- 範囲 = release PR 本文の「含まれる PR」一覧。一覧の全 PR について `gh pr view <n> --json reviews,author` で承認の記録を確かめる\n- 承認の記録 = `qm-bot` の APPROVED で、その後に REQUEST_CHANGES が無いもの。REQUEST_CHANGES のまま（後の APPROVED が無い）は記録なし。作成者と同じアカウントの APPROVED は記録と見なさない（作成者 ≠ 承認者）\n- 記録の無い PR が 1 つでもあれば差し戻す（記録の欠落は出荷の欠陥）\n- 「含まれる変更が多い」「予定の項目が残っている」は止める理由にしない。異議として判定の記録に書き、承認する\n- 必須の検査が未起動（pending / 未報告）なら承認しない\n\n{\n \"number\": 32,\n \"title\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/STK-31\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-20T09:35:00+00:00\",\n   \"messageHeadline\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}",
+                  "stderr": "",
+                  "interrupted": false,
+                  "isImage": false,
+                  "noOutputExpected": false
+                },
+                "raw_tool_result": {
+                  "tool_use_id": "toolu_01HQYt8ZCuR4Wax99fFuM1Xd",
+                  "type": "tool_result",
+                  "content": "# stockcount — 案件アダプタ（QM: レビューと出荷判定）\n\nこの案件で QM（1 つの変更の独立レビュー / 出荷判定）が使う値。Dev の値は `.claude/dev-adapter.md`。ここに無いことは QM の既定に従う。\n\n## 役割と判定の形\n- QM は 1 つの変更（PR）の独立レビューと、出荷（release / hotfix）の判定を行う。QM は対象のコードを直さない（修正は作成者へ差し戻す）\n- 判定は `verdict: final` — QM の判定が最終。差し戻しは作成者の受信箱へ: PR の review `request changes` + label `review:blocked`。承認は review `approve` + label `review:ok`\n- 承認は QM のアカウント `qm-bot` で行う（`gh auth switch --user qm-bot`）。PR の作成者と同じアカウントで承認しない（作成者 ≠ 承認者）。既定のアカウント `you` は作成者のことがある\n- 判定の記録（review の本文）に書くもの: 段と理由（1 行、例 `R2: 差分の中で完結するため`）/ 所見（severity・`path:行` の位置・何が起きるか）/ 未確認の一覧（開かなかった・走らせなかったもの。無ければ「未確認: なし」）/ 承認時は挙動要約（この変更で何がどう変わるか。差分の言い換えではなく振る舞いで）\n\n## レーンと必須の検査\n| レーン | PR | 必須の検査（`gh pr checks` の name） | 補足 |\n|---|---|---|---|\n| develop | topic → develop | spec, lint | 通常の変更 |\n| hotfix | hotfix/* → main | spec, smoke | 本番の緊急修正。1 PR を出荷判定（D1）する |\n| release | release/<日付> → main | spec, lint, smoke + 含まれる全 PR の判定記録 | 出荷判定（D2） |\n\n- 必須の検査が `skipping` / `pending` / 未報告（`gh pr checks` の一覧にその name が無い）、または対象の commit が古い（最後の commit より前に完了した検査）なら、その証拠では承認しない\n- Draft の PR は判定の対象外。作成者が Draft を外してから判定する（QM が `gh pr ready` で外さない）\n\n## 変更パス → 読む設計書\n| 変更パス | 設計書 |\n|---|---|\n| src/lib/stock.sh, src/move.sh | docs/design/ledger-rules.md, docs/design/cli-conventions.md |\n| src/report.sh, src/lowstock.sh | docs/design/report-format.md, docs/design/cli-conventions.md |\n| data/**, tools/close-month | docs/design/data-files.md |\n| tools/check | docs/design/cli-conventions.md |\n\n設計書と差分が食い違うときは、docs/decisions/ に置き換えの決定記録があるかを見る（記録のほうが新しければ設計書が古い。承認してよいが、設計書の更新を求める）。表に無いパスは、変更が何に効くかから読む設計書を QM が選び、選ばなかった理由も含めて記録に書く。\n\n## 深さ（段）\n| 段 | 使う場面 |\n|---|---|\n| R1 | docs/ だけ・spec/ だけの標準変更。CI の集計と差分で判定 |\n| R2 | 差分の中で完結する変更（1 module）。設計書と突き合わせる |\n| R3 | 差分の外に効く変更（他の script の読み手、data/ の形式、出力の互換、依存の追加、設計書との食い違い） |\n| R4 | 前提・技術の選択に関わる変更（データの持ち方の変更、ツールの置き換え） |\n| D1 | hotfix 1 PR の出荷 |\n| D2 | release の範囲（複数 PR）の出荷 |\n\n## severity（3 段）\n| 段 | 内容 | 扱い |\n|---|---|---|\n| S1 | 在庫数の誤り（手持ちを超える出庫・記帳の消失・二重計上・報告の数の誤り）・経理へ送った記録の変更・戻せない操作 | 差し戻し |\n| S2 | 設計書・決定記録との不一致（記録の要る変更に記録が無いことを含む）、主張と差分の不一致（本文の「確認」「変更」が HEAD と合わない）、必須の検査の証拠の欠け、判定記録の欠落 | 差し戻し（設計書側の正否が QM に決められないときは所見を書いて裁定へ回す） |\n| S3 | 書式・命名・好み・コメントの質・spec の書き方 | 任意の指摘。止めない |\n\n## label の語彙\n- 判定: `review:ok` / `review:blocked`\n- 回付: `ask:product` / `ask:architecture` / `ask:ops`\n- `state:*` / `needs-*` はこの案件では使わない（誰も見ていない）\n\n## 宛先の表（決定権）\n| # | 条件（どれか 1 つ） | 宛先 | QM がしてよいこと |\n|---|---|---|---|\n| R0 | 戻せない操作を含む（data/closed/ の変更・削除、tools/close-month の実行、data/ の形式変更） | @ops-lead（`ask:ops`） | 事実をそろえて回す。承認しない |\n| R1 | 統制の弱化（必須の検査の削除・緩和、spec の削除） | @tech-lead（`ask:architecture`）。重要な検査の削除は @ops-lead 併記 | 差分と主張の一致の確認だけ |\n| R2 | 顧客に見える文言・振る舞い・優先順位・受入基準の問い | @pm-lead（`ask:product`） | 事実の確認だけ答える。文言が未決なら承認せず回す |\n| R3 | 技術の選択の問い（依存の追加、外部インタフェース、データ形式、出力の互換） | @tech-lead（`ask:architecture`） | 事実の確認だけ答える。選択肢を決めない |\n| R4 | 出荷の範囲の判定・release cut | QM 出荷判定（qm-bot 自身） | 判定する |\n| R5 | 個別の変更の合否 | QM レビュー（qm-bot 自身） | 判定する |\n| R6 | 承認済みの受入基準とスコープの内側の作業上の選択（関数の分け方、spec の書き方、オプション名） | 作成者（Dev）。回さない | 好みの差は S3 |\n| R7 | 宛先を特定できない | @pm-lead（`ask:product`） | — |\n\n- 回すときは PR に label を付け、PR のコメントで宛先を先頭に @mention して問いを書く。QM は問いに答えない（「この HEAD に何が入っているか」等の事実は答える）\n- 回した問いが PR の内容そのもの（文言・形式・差分に入っている依存）なら、決まるまで承認しない。問いが PR の外の選択（別案・将来の変更）で PR 自体が設計書・決定記録に沿っていれば、PR は判定し、問いだけを回す\n\n## 戻せない操作と承認者\n- data/closed/ の変更・削除（リポジトリ上の差分も含む: 毎晩経理へ送られ計上される）、tools/close-month の実行\n- 承認者: @ops-lead。承認がコメントに残るまで merge / 承認しない\n\n## 出荷判定（release / hotfix）\n- 範囲 = release PR 本文の「含まれる PR」一覧。一覧の全 PR について `gh pr view <n> --json reviews,author` で承認の記録を確かめる\n- 承認の記録 = `qm-bot` の APPROVED で、その後に REQUEST_CHANGES が無いもの。REQUEST_CHANGES のまま（後の APPROVED が無い）は記録なし。作成者と同じアカウントの APPROVED は記録と見なさない（作成者 ≠ 承認者）\n- 記録の無い PR が 1 つでもあれば差し戻す（記録の欠落は出荷の欠陥）\n- 「含まれる変更が多い」「予定の項目が残っている」は止める理由にしない。異議として判定の記録に書き、承認する\n- 必須の検査が未起動（pending / 未報告）なら承認しない\n\n{\n \"number\": 32,\n \"title\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/STK-31\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-20T09:35:00+00:00\",\n   \"messageHeadline\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}",
+                  "is_error": false
+                }
+              },
+              "tool_result_is_error": false
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 23200,
+        "completion_tokens": 163,
+        "cached_tokens": 23198,
+        "cost_usd": 0.0039538,
+        "extra": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 23198,
+          "output_tokens_details": {
+            "thinking_tokens": 19
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 0,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 4,
+      "timestamp": "2026-11-05T05:56:13.840Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_01CphUq5nPgxwfRh85MF12VW",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "gh pr view 32 --json body --jq .body; echo ----; gh issue view 31; echo ----; git fetch -q origin 2>&1|tail -2; git ls-remote origin refs/heads/fix/STK-31; gh pr diff 32; ls docs/design docs/decisions 2>&1"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "gh pr view 32 --json body --jq .body; echo ----; gh issue view 31; echo ----; git fetch -q origin 2>&1|tail -2; git ls-remote origin refs/heads/fix/STK-31; gh pr diff 32; ls docs/design docs/decisions 2>&1"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_01CphUq5nPgxwfRh85MF12VW",
+            "content": "{\n \"number\": 32,\n \"title\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/STK-31\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-20T09:35:00+00:00\",\n   \"messageHeadline\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n\n----\nSTK-31: 手持ちと同数の出庫が insufficient で断られる。\n\n再現: A-200 の手持ちが 8 のとき `bash src/move.sh A-200 8 OUT SO-2210` が `insufficient: A-200 has 8, asked for 8` になる。\n\n期待: 手持ちと同数の出庫は受け付ける（決定 0001、docs/design/ledger-rules.md §出庫）。手持ちを超える出庫は今まで通り断る。\n\n----\nPlease make sure you have the correct access rights\nand the repository exists.\nfatal: 'origin' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\ndiff --git a/spec/move_out.spec.sh b/spec/move_out.spec.sh\nnew file mode 100644\nindex 0000000..2fb33fc\n--- /dev/null\n+++ b/spec/move_out.spec.sh\n@@ -0,0 +1,8 @@\n+#!/bin/bash\n+fail=0\n+t=$(mktemp); printf '# h\\n2026-11-01\\tB-010\\t5\\tIN\\tPO-9\\n' > \"$t\"\n+LEDGER=$t bash src/move.sh B-010 6 OUT SO-1 >/dev/null 2>&1; [ $? = 1 ] || { echo \"6 of 5 accepted\"; fail=1; }\n+LEDGER=$t bash src/move.sh B-010 5 OUT SO-2 >/dev/null 2>&1 || { echo \"5 of 5 refused\"; fail=1; }\n+[ \"$(grep -vc '^#' \"$t\")\" = 2 ] || { echo \"ledger rows: $(grep -vc '^#' \"$t\")\"; fail=1; }\n+rm -f \"$t\"; exit $fail\n+\ndiff --git a/src/move.sh b/src/move.sh\nindex 48e998f..47c06f1 100644\n--- a/src/move.sh\n+++ b/src/move.sh\n@@ -8,7 +8,7 @@ qty_ok \"$qty\" || { echo \"quantity must be a whole number: $qty\" >&2; exit 2; }\n case \"$kind\" in IN|OUT) ;; *) echo \"kind must be IN or OUT: $kind\" >&2; exit 2 ;; esac\n if [ \"$kind\" = OUT ]; then\n   have=$(onhand \"$sku\")\n-  [ \"$qty\" -lt \"$have\" ] || { echo \"insufficient: $sku has $have, asked for $qty\" >&2; exit 1; }\n+  [[ ! \"$qty\" > \"$have\" ]] || { echo \"insufficient: $sku has $have, asked for $qty\" >&2; exit 1; } # equal is allowed (decision 0001)\n fi\n printf '%s\\t%s\\t%s\\t%s\\t%s\\n' \"$TODAY\" \"$sku\" \"$qty\" \"$kind\" \"$ref\" >> \"$LEDGER\"\n echo \"recorded: $kind $qty $sku ($ref)\"\ndocs/decisions:\n0001-out-up-to-onhand.md\n0002-report-format-is-an-interface.md\n0003-min-per-item.md\n\ndocs/design:\ncli-conventions.md\ndata-files.md\nledger-rules.md\nreport-format.md\n\n[stdout]\n{\n \"number\": 32,\n \"title\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/STK-31\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-20T09:35:00+00:00\",\n   \"messageHeadline\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n\n----\nSTK-31: 手持ちと同数の出庫が insufficient で断られる。\n\n再現: A-200 の手持ちが 8 のとき `bash src/move.sh A-200 8 OUT SO-2210` が `insufficient: A-200 has 8, asked for 8` になる。\n\n期待: 手持ちと同数の出庫は受け付ける（決定 0001、docs/design/ledger-rules.md §出庫）。手持ちを超える出庫は今まで通り断る。\n\n----\nPlease make sure you have the correct access rights\nand the repository exists.\nfatal: 'origin' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\ndiff --git a/spec/move_out.spec.sh b/spec/move_out.spec.sh\nnew file mode 100644\nindex 0000000..2fb33fc\n--- /dev/null\n+++ b/spec/move_out.spec.sh\n@@ -0,0 +1,8 @@\n+#!/bin/bash\n+fail=0\n+t=$(mktemp); printf '# h\\n2026-11-01\\tB-010\\t5\\tIN\\tPO-9\\n' > \"$t\"\n+LEDGER=$t bash src/move.sh B-010 6 OUT SO-1 >/dev/null 2>&1; [ $? = 1 ] || { echo \"6 of 5 accepted\"; fail=1; }\n+LEDGER=$t bash src/move.sh B-010 5 OUT SO-2 >/dev/null 2>&1 || { echo \"5 of 5 refused\"; fail=1; }\n+[ \"$(grep -vc '^#' \"$t\")\" = 2 ] || { echo \"ledger rows: $(grep -vc '^#' \"$t\")\"; fail=1; }\n+rm -f \"$t\"; exit $fail\n+\ndiff --git a/src/move.sh b/src/move.sh\nindex 48e998f..47c06f1 100644\n--- a/src/move.sh\n+++ b/src/move.sh\n@@ -8,7 +8,7 @@ qty_ok \"$qty\" || { echo \"quantity must be a whole number: $qty\" >&2; exit 2; }\n case \"$kind\" in IN|OUT) ;; *) echo \"kind must be IN or OUT: $kind\" >&2; exit 2 ;; esac\n if [ \"$kind\" = OUT ]; then\n   have=$(onhand \"$sku\")\n-  [ \"$qty\" -lt \"$have\" ] || { echo \"insufficient: $sku has $have, asked for $qty\" >&2; exit 1; }\n+  [[ ! \"$qty\" > \"$have\" ]] || { echo \"insufficient: $sku has $have, asked for $qty\" >&2; exit 1; } # equal is allowed (decision 0001)\n fi\n printf '%s\\t%s\\t%s\\t%s\\t%s\\n' \"$TODAY\" \"$sku\" \"$qty\" \"$kind\" \"$ref\" >> \"$LEDGER\"\n echo \"recorded: $kind $qty $sku ($ref)\"\ndocs/decisions:\n0001-out-up-to-onhand.md\n0002-report-format-is-an-interface.md\n0003-min-per-item.md\n\ndocs/design:\ncli-conventions.md\ndata-files.md\nledger-rules.md\nreport-format.md\n[metadata] {\"noOutputExpected\": false}",
+            "extra": {
+              "tool_result_metadata": {
+                "tool_use_result": {
+                  "stdout": "{\n \"number\": 32,\n \"title\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/STK-31\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-20T09:35:00+00:00\",\n   \"messageHeadline\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n\n----\nSTK-31: 手持ちと同数の出庫が insufficient で断られる。\n\n再現: A-200 の手持ちが 8 のとき `bash src/move.sh A-200 8 OUT SO-2210` が `insufficient: A-200 has 8, asked for 8` になる。\n\n期待: 手持ちと同数の出庫は受け付ける（決定 0001、docs/design/ledger-rules.md §出庫）。手持ちを超える出庫は今まで通り断る。\n\n----\nPlease make sure you have the correct access rights\nand the repository exists.\nfatal: 'origin' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\ndiff --git a/spec/move_out.spec.sh b/spec/move_out.spec.sh\nnew file mode 100644\nindex 0000000..2fb33fc\n--- /dev/null\n+++ b/spec/move_out.spec.sh\n@@ -0,0 +1,8 @@\n+#!/bin/bash\n+fail=0\n+t=$(mktemp); printf '# h\\n2026-11-01\\tB-010\\t5\\tIN\\tPO-9\\n' > \"$t\"\n+LEDGER=$t bash src/move.sh B-010 6 OUT SO-1 >/dev/null 2>&1; [ $? = 1 ] || { echo \"6 of 5 accepted\"; fail=1; }\n+LEDGER=$t bash src/move.sh B-010 5 OUT SO-2 >/dev/null 2>&1 || { echo \"5 of 5 refused\"; fail=1; }\n+[ \"$(grep -vc '^#' \"$t\")\" = 2 ] || { echo \"ledger rows: $(grep -vc '^#' \"$t\")\"; fail=1; }\n+rm -f \"$t\"; exit $fail\n+\ndiff --git a/src/move.sh b/src/move.sh\nindex 48e998f..47c06f1 100644\n--- a/src/move.sh\n+++ b/src/move.sh\n@@ -8,7 +8,7 @@ qty_ok \"$qty\" || { echo \"quantity must be a whole number: $qty\" >&2; exit 2; }\n case \"$kind\" in IN|OUT) ;; *) echo \"kind must be IN or OUT: $kind\" >&2; exit 2 ;; esac\n if [ \"$kind\" = OUT ]; then\n   have=$(onhand \"$sku\")\n-  [ \"$qty\" -lt \"$have\" ] || { echo \"insufficient: $sku has $have, asked for $qty\" >&2; exit 1; }\n+  [[ ! \"$qty\" > \"$have\" ]] || { echo \"insufficient: $sku has $have, asked for $qty\" >&2; exit 1; } # equal is allowed (decision 0001)\n fi\n printf '%s\\t%s\\t%s\\t%s\\t%s\\n' \"$TODAY\" \"$sku\" \"$qty\" \"$kind\" \"$ref\" >> \"$LEDGER\"\n echo \"recorded: $kind $qty $sku ($ref)\"\ndocs/decisions:\n0001-out-up-to-onhand.md\n0002-report-format-is-an-interface.md\n0003-min-per-item.md\n\ndocs/design:\ncli-conventions.md\ndata-files.md\nledger-rules.md\nreport-format.md",
+                  "stderr": "",
+                  "interrupted": false,
+                  "isImage": false,
+                  "noOutputExpected": false
+                },
+                "raw_tool_result": {
+                  "tool_use_id": "toolu_01CphUq5nPgxwfRh85MF12VW",
+                  "type": "tool_result",
+                  "content": "{\n \"number\": 32,\n \"title\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n \"state\": \"OPEN\",\n \"isDraft\": false,\n \"author\": {\n  \"login\": \"you\"\n },\n \"baseRefName\": \"develop\",\n \"headRefName\": \"fix/STK-31\",\n \"mergeable\": \"MERGEABLE\",\n \"reviewDecision\": \"REVIEW_REQUIRED\",\n \"reviewRequests\": [\n  {\n   \"login\": \"qm-bot\"\n  }\n ],\n \"labels\": [],\n \"commits\": [\n  {\n   \"committedDate\": \"2026-11-20T09:35:00+00:00\",\n   \"messageHeadline\": \"fix(move): 手持ちと同数の出庫を受け付ける (#31)\",\n   \"authors\": [\n    {\n     \"login\": \"you\"\n    }\n   ]\n  }\n ],\n \"statusCheckRollup\": [\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"spec\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  },\n  {\n   \"__typename\": \"CheckRun\",\n   \"name\": \"lint\",\n   \"workflowName\": \"ci\",\n   \"status\": \"COMPLETED\",\n   \"conclusion\": \"SUCCESS\",\n   \"startedAt\": \"2026-11-20T09:36:00+00:00\",\n   \"completedAt\": \"2026-11-20T09:37:00+00:00\"\n  }\n ],\n \"reviews\": [],\n \"comments\": []\n}\n\n----\nSTK-31: 手持ちと同数の出庫が insufficient で断られる。\n\n再現: A-200 の手持ちが 8 のとき `bash src/move.sh A-200 8 OUT SO-2210` が `insufficient: A-200 has 8, asked for 8` になる。\n\n期待: 手持ちと同数の出庫は受け付ける（決定 0001、docs/design/ledger-rules.md §出庫）。手持ちを超える出庫は今まで通り断る。\n\n----\nPlease make sure you have the correct access rights\nand the repository exists.\nfatal: 'origin' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\ndiff --git a/spec/move_out.spec.sh b/spec/move_out.spec.sh\nnew file mode 100644\nindex 0000000..2fb33fc\n--- /dev/null\n+++ b/spec/move_out.spec.sh\n@@ -0,0 +1,8 @@\n+#!/bin/bash\n+fail=0\n+t=$(mktemp); printf '# h\\n2026-11-01\\tB-010\\t5\\tIN\\tPO-9\\n' > \"$t\"\n+LEDGER=$t bash src/move.sh B-010 6 OUT SO-1 >/dev/null 2>&1; [ $? = 1 ] || { echo \"6 of 5 accepted\"; fail=1; }\n+LEDGER=$t bash src/move.sh B-010 5 OUT SO-2 >/dev/null 2>&1 || { echo \"5 of 5 refused\"; fail=1; }\n+[ \"$(grep -vc '^#' \"$t\")\" = 2 ] || { echo \"ledger rows: $(grep -vc '^#' \"$t\")\"; fail=1; }\n+rm -f \"$t\"; exit $fail\n+\ndiff --git a/src/move.sh b/src/move.sh\nindex 48e998f..47c06f1 100644\n--- a/src/move.sh\n+++ b/src/move.sh\n@@ -8,7 +8,7 @@ qty_ok \"$qty\" || { echo \"quantity must be a whole number: $qty\" >&2; exit 2; }\n case \"$kind\" in IN|OUT) ;; *) echo \"kind must be IN or OUT: $kind\" >&2; exit 2 ;; esac\n if [ \"$kind\" = OUT ]; then\n   have=$(onhand \"$sku\")\n-  [ \"$qty\" -lt \"$have\" ] || { echo \"insufficient: $sku has $have, asked for $qty\" >&2; exit 1; }\n+  [[ ! \"$qty\" > \"$have\" ]] || { echo \"insufficient: $sku has $have, asked for $qty\" >&2; exit 1; } # equal is allowed (decision 0001)\n fi\n printf '%s\\t%s\\t%s\\t%s\\t%s\\n' \"$TODAY\" \"$sku\" \"$qty\" \"$kind\" \"$ref\" >> \"$LEDGER\"\n echo \"recorded: $kind $qty $sku ($ref)\"\ndocs/decisions:\n0001-out-up-to-onhand.md\n0002-report-format-is-an-interface.md\n0003-min-per-item.md\n\ndocs/design:\ncli-conventions.md\ndata-files.md\nledger-rules.md\nreport-format.md",
+                  "is_error": false
+                }
+              },
+              "tool_result_is_error": false
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 26820,
+        "completion_tokens": 215,
+        "cached_tokens": 23198,
+        "cost_usd": 0.013523799999999999,
+        "extra": {
+          "cache_creation_input_tokens": 3620,
+          "cache_read_input_tokens": 23198,
+          "output_tokens_details": {
+            "thinking_tokens": 66
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 3620,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 5,
+      "timestamp": "2026-11-05T05:56:16.474Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "`[[ ... > ... ]]` は文字列比較です。実際に動かして確かめます。",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_01MSipoi6DsvjiRmoKcdwWoi",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "cd /app; git remote -v; git branch -a; cat docs/decisions/0001-out-up-to-onhand.md; grep -n \"出庫\" -A6 docs/design/ledger-rules.md | head -30; gh pr checkout 32 2>&1 | tail -2; git log --oneline -2"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "cd /app; git remote -v; git branch -a; cat docs/decisions/0001-out-up-to-onhand.md; grep -n \"出庫\" -A6 docs/design/ledger-rules.md | head -30; gh pr checkout 32 2>&1 | tail -2; git log --oneline -2"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_01MSipoi6DsvjiRmoKcdwWoi",
+            "content": "* develop\n  fix/STK-31\n# 0001 出庫は手持ちと同数まで受け付ける\n\n状態: accepted / 日付: 2026-07-14 / 決めた人: @tech-lead\n\n出庫の数量 qty は qty ≤ 手持ち のとき受け付ける（同数は可、超過は exit 1）。\n比較は整数で行う。手持ちは data/ledger.tsv の IN − OUT。\n\n9:## 出庫\n10:- 出庫（OUT）は手持ちを超えてはならない。手持ちと同数の出庫は受け付ける（決定 0001）。超える出庫は exit 1、stderr に `insufficient: <SKU> has <手持ち>, asked for <数量>`\n11-- 手持ち = data/ledger.tsv の IN の合計 − OUT の合計。締めた月の写し（data/closed/）は数えない（台帳の行は締めの後も残る）\n12-\n13-## 記録\n14:- 受け付けた入出庫は data/ledger.tsv の末尾に 1 行追記する。既存の行を書き換えたり消したりしない（訂正は逆向きの入出庫を記帳する）\n15-- SKU は data/items.tsv の表記のまま記録する\n16-- 成功時は stdout に 1 行を出す（内容は製品の決定に従う）\n17-\nok\nb3d80c8 stockcount: initial import\n\n[stdout]\n* develop\n  fix/STK-31\n# 0001 出庫は手持ちと同数まで受け付ける\n\n状態: accepted / 日付: 2026-07-14 / 決めた人: @tech-lead\n\n出庫の数量 qty は qty ≤ 手持ち のとき受け付ける（同数は可、超過は exit 1）。\n比較は整数で行う。手持ちは data/ledger.tsv の IN − OUT。\n\n9:## 出庫\n10:- 出庫（OUT）は手持ちを超えてはならない。手持ちと同数の出庫は受け付ける（決定 0001）。超える出庫は exit 1、stderr に `insufficient: <SKU> has <手持ち>, asked for <数量>`\n11-- 手持ち = data/ledger.tsv の IN の合計 − OUT の合計。締めた月の写し（data/closed/）は数えない（台帳の行は締めの後も残る）\n12-\n13-## 記録\n14:- 受け付けた入出庫は data/ledger.tsv の末尾に 1 行追記する。既存の行を書き換えたり消したりしない（訂正は逆向きの入出庫を記帳する）\n15-- SKU は data/items.tsv の表記のまま記録する\n16-- 成功時は stdout に 1 行を出す（内容は製品の決定に従う）\n17-\nok\nb3d80c8 stockcount: initial import\n[metadata] {\"noOutputExpected\": false}",
+            "extra": {
+              "tool_result_metadata": {
+                "tool_use_result": {
+                  "stdout": "* develop\n  fix/STK-31\n# 0001 出庫は手持ちと同数まで受け付ける\n\n状態: accepted / 日付: 2026-07-14 / 決めた人: @tech-lead\n\n出庫の数量 qty は qty ≤ 手持ち のとき受け付ける（同数は可、超過は exit 1）。\n比較は整数で行う。手持ちは data/ledger.tsv の IN − OUT。\n\n9:## 出庫\n10:- 出庫（OUT）は手持ちを超えてはならない。手持ちと同数の出庫は受け付ける（決定 0001）。超える出庫は exit 1、stderr に `insufficient: <SKU> has <手持ち>, asked for <数量>`\n11-- 手持ち = data/ledger.tsv の IN の合計 − OUT の合計。締めた月の写し（data/closed/）は数えない（台帳の行は締めの後も残る）\n12-\n13-## 記録\n14:- 受け付けた入出庫は data/ledger.tsv の末尾に 1 行追記する。既存の行を書き換えたり消したりしない（訂正は逆向きの入出庫を記帳する）\n15-- SKU は data/items.tsv の表記のまま記録する\n16-- 成功時は stdout に 1 行を出す（内容は製品の決定に従う）\n17-\nok\nb3d80c8 stockcount: initial import",
+                  "stderr": "",
+                  "interrupted": false,
+                  "isImage": false,
+                  "noOutputExpected": false
+                },
+                "raw_tool_result": {
+                  "tool_use_id": "toolu_01MSipoi6DsvjiRmoKcdwWoi",
+                  "type": "tool_result",
+                  "content": "* develop\n  fix/STK-31\n# 0001 出庫は手持ちと同数まで受け付ける\n\n状態: accepted / 日付: 2026-07-14 / 決めた人: @tech-lead\n\n出庫の数量 qty は qty ≤ 手持ち のとき受け付ける（同数は可、超過は exit 1）。\n比較は整数で行う。手持ちは data/ledger.tsv の IN − OUT。\n\n9:## 出庫\n10:- 出庫（OUT）は手持ちを超えてはならない。手持ちと同数の出庫は受け付ける（決定 0001）。超える出庫は exit 1、stderr に `insufficient: <SKU> has <手持ち>, asked for <数量>`\n11-- 手持ち = data/ledger.tsv の IN の合計 − OUT の合計。締めた月の写し（data/closed/）は数えない（台帳の行は締めの後も残る）\n12-\n13-## 記録\n14:- 受け付けた入出庫は data/ledger.tsv の末尾に 1 行追記する。既存の行を書き換えたり消したりしない（訂正は逆向きの入出庫を記帳する）\n15-- SKU は data/items.tsv の表記のまま記録する\n16-- 成功時は stdout に 1 行を出す（内容は製品の決定に従う）\n17-\nok\nb3d80c8 stockcount: initial import",
+                  "is_error": false
+                }
+              },
+              "tool_result_is_error": false
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 28747,
+        "completion_tokens": 290,
+        "cached_tokens": 26818,
+        "cost_usd": 0.0104033,
+        "extra": {
+          "cache_creation_input_tokens": 1927,
+          "cache_read_input_tokens": 26818,
+          "output_tokens_details": {
+            "thinking_tokens": 110
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 1927,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 6,
+      "timestamp": "2026-11-05T05:56:18.901Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_019vtMG3YLdGmfLPZTEuHHLM",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "cd /app; git checkout -q fix/STK-31; git log --oneline -3; t=$(mktemp); printf '# h\\n2026-11-01\\tB-010\\t8\\tIN\\tPO-9\\n' > $t; LEDGER=$t bash src/move.sh B-010 10 OUT SO-1; echo \"exit=$?\"; LEDGER=$t bash src/move.sh B-010 9 OUT SO-1; echo \"exit=$?\"; cat $t; bash spec/move_out.spec.sh; echo spec=$?"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "cd /app; git checkout -q fix/STK-31; git log --oneline -3; t=$(mktemp); printf '# h\\n2026-11-01\\tB-010\\t8\\tIN\\tPO-9\\n' > $t; LEDGER=$t bash src/move.sh B-010 10 OUT SO-1; echo \"exit=$?\"; LEDGER=$t bash src/move.sh B-010 9 OUT SO-1; echo \"exit=$?\"; cat $t; bash spec/move_out.spec.sh; echo spec=$?"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_019vtMG3YLdGmfLPZTEuHHLM",
+            "content": "48c2ff2 fix(move): 手持ちと同数の出庫を受け付ける (#31)\nb3d80c8 stockcount: initial import\nrecorded: OUT 10 B-010 (SO-1)\nexit=0\ninsufficient: B-010 has -2, asked for 9\nexit=1\n# h\n2026-11-01\tB-010\t8\tIN\tPO-9\n2026-11-05\tB-010\t10\tOUT\tSO-1\nspec=0\n\n[stdout]\n48c2ff2 fix(move): 手持ちと同数の出庫を受け付ける (#31)\nb3d80c8 stockcount: initial import\nrecorded: OUT 10 B-010 (SO-1)\nexit=0\ninsufficient: B-010 has -2, asked for 9\nexit=1\n# h\n2026-11-01\tB-010\t8\tIN\tPO-9\n2026-11-05\tB-010\t10\tOUT\tSO-1\nspec=0\n[metadata] {\"noOutputExpected\": false}",
+            "extra": {
+              "tool_result_metadata": {
+                "tool_use_result": {
+                  "stdout": "48c2ff2 fix(move): 手持ちと同数の出庫を受け付ける (#31)\nb3d80c8 stockcount: initial import\nrecorded: OUT 10 B-010 (SO-1)\nexit=0\ninsufficient: B-010 has -2, asked for 9\nexit=1\n# h\n2026-11-01\tB-010\t8\tIN\tPO-9\n2026-11-05\tB-010\t10\tOUT\tSO-1\nspec=0",
+                  "stderr": "",
+                  "interrupted": false,
+                  "isImage": false,
+                  "noOutputExpected": false
+                },
+                "raw_tool_result": {
+                  "tool_use_id": "toolu_019vtMG3YLdGmfLPZTEuHHLM",
+                  "type": "tool_result",
+                  "content": "48c2ff2 fix(move): 手持ちと同数の出庫を受け付ける (#31)\nb3d80c8 stockcount: initial import\nrecorded: OUT 10 B-010 (SO-1)\nexit=0\ninsufficient: B-010 has -2, asked for 9\nexit=1\n# h\n2026-11-01\tB-010\t8\tIN\tPO-9\n2026-11-05\tB-010\t10\tOUT\tSO-1\nspec=0",
+                  "is_error": false
+                }
+              },
+              "tool_result_is_error": false
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 29518,
+        "completion_tokens": 228,
+        "cached_tokens": 28745,
+        "cost_usd": 0.007086,
+        "extra": {
+          "cache_creation_input_tokens": 771,
+          "cache_read_input_tokens": 28745,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 771,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 7,
+      "timestamp": "2026-11-05T05:56:20.454Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "手持ち 8 に対し 10 の出庫が通ることを確認しました（S1）。qm-bot で差し戻します。",
+      "tool_calls": [
+        {
+          "tool_call_id": "toolu_016peU2HPeqZQA2pNDaGyzpH",
+          "function_name": "Bash",
+          "arguments": {
+            "command": "cd /app; git checkout -q develop\ngh auth switch --user qm-bot 2>&1|tail -1\ngh pr review 32 --request-changes --body \"$(cat <<'EOF'\n段: R2 — src/move.sh 1 module の変更で差分内に完結。ledger-rules.md §出庫 / 決定 0001 と突き合わせ\n\n## 所見\n- **S1** `src/move.sh:11` — `[[ ! \"$qty\" > \"$have\" ]]` は `[[ ]]` 内の `>` が**文字列（辞書順）比較**で、整数比較ではない（決定 0001 は「比較は整数で行う」）。手持ちを超える出庫が通る。\n  - 実測（HEAD 48c2ff2、LEDGER に B-010 IN 8 のみ）: `move.sh B-010 10 OUT SO-1` → `recorded: OUT 10 B-010`、exit 0。手持ちは -2 になり、以降の出庫は `has -2` で断られる。\"10\" < \"8\" が辞書順で真になるため。桁数が違う数量で発生する（例: 手持ち 8 に 10、手持ち 9 に 100）。\n  - 修正案: `[ \"$qty\" -le \"$have\" ]`（元の `-lt` を `-le` にするだけ）。\n- **S2** `spec/move_out.spec.sh` — 超過ケースが 6 of 5（同桁）のみで、上の不具合を検出できない。桁数が違う超過（例: 手持ち 8 に 10）のケースを追加してほしい。\n\n## 検査（実測）\n- spec: SUCCESS / lint: SUCCESS（ともに 09:37 完了、最終 commit 09:35 より後）。ただし spec は上記の不具合を通している。\n- Draft ではない。\n\n## 未確認\n- lint の中身（CI ログ）は開いていない。\n- data/ 以下・tools/ は差分に無く対象外。\n\n判定: REQUEST_CHANGES（S1: 手持ちを超える出庫の受け付け = 在庫数の誤り）\nEOF\n)\" 2>&1|tail -2\ngh pr edit 32 --add-label review:blocked 2>&1|tail -1\ngh auth switch --user you 2>&1|tail -1"
+          },
+          "extra": {
+            "raw_arguments": {
+              "command": "cd /app; git checkout -q develop\ngh auth switch --user qm-bot 2>&1|tail -1\ngh pr review 32 --request-changes --body \"$(cat <<'EOF'\n段: R2 — src/move.sh 1 module の変更で差分内に完結。ledger-rules.md §出庫 / 決定 0001 と突き合わせ\n\n## 所見\n- **S1** `src/move.sh:11` — `[[ ! \"$qty\" > \"$have\" ]]` は `[[ ]]` 内の `>` が**文字列（辞書順）比較**で、整数比較ではない（決定 0001 は「比較は整数で行う」）。手持ちを超える出庫が通る。\n  - 実測（HEAD 48c2ff2、LEDGER に B-010 IN 8 のみ）: `move.sh B-010 10 OUT SO-1` → `recorded: OUT 10 B-010`、exit 0。手持ちは -2 になり、以降の出庫は `has -2` で断られる。\"10\" < \"8\" が辞書順で真になるため。桁数が違う数量で発生する（例: 手持ち 8 に 10、手持ち 9 に 100）。\n  - 修正案: `[ \"$qty\" -le \"$have\" ]`（元の `-lt` を `-le` にするだけ）。\n- **S2** `spec/move_out.spec.sh` — 超過ケースが 6 of 5（同桁）のみで、上の不具合を検出できない。桁数が違う超過（例: 手持ち 8 に 10）のケースを追加してほしい。\n\n## 検査（実測）\n- spec: SUCCESS / lint: SUCCESS（ともに 09:37 完了、最終 commit 09:35 より後）。ただし spec は上記の不具合を通している。\n- Draft ではない。\n\n## 未確認\n- lint の中身（CI ログ）は開いていない。\n- data/ 以下・tools/ は差分に無く対象外。\n\n判定: REQUEST_CHANGES（S1: 手持ちを超える出庫の受け付け = 在庫数の誤り）\nEOF\n)\" 2>&1|tail -2\ngh pr edit 32 --add-label review:blocked 2>&1|tail -1\ngh auth switch --user you 2>&1|tail -1"
+            },
+            "tool_use_name": "Bash"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "toolu_016peU2HPeqZQA2pNDaGyzpH",
+            "content": "✓ Switched active account for github.com\n✓ Reviewed pull request #32\nhttps://github.com/example/repo/pull/32\n✓ Switched active account for github.com\n\n[stdout]\n✓ Switched active account for github.com\n✓ Reviewed pull request #32\nhttps://github.com/example/repo/pull/32\n✓ Switched active account for github.com\n[metadata] {\"noOutputExpected\": false, \"gitOperation\": {\"pr\": {\"number\": 32, \"url\": \"https://github.com/example/repo/pull/32\", \"action\": \"edited\"}}}",
+            "extra": {
+              "tool_result_metadata": {
+                "tool_use_result": {
+                  "stdout": "✓ Switched active account for github.com\n✓ Reviewed pull request #32\nhttps://github.com/example/repo/pull/32\n✓ Switched active account for github.com",
+                  "stderr": "",
+                  "interrupted": false,
+                  "isImage": false,
+                  "noOutputExpected": false,
+                  "gitOperation": {
+                    "pr": {
+                      "number": 32,
+                      "url": "https://github.com/example/repo/pull/32",
+                      "action": "edited"
+                    }
+                  }
+                },
+                "raw_tool_result": {
+                  "tool_use_id": "toolu_016peU2HPeqZQA2pNDaGyzpH",
+                  "type": "tool_result",
+                  "content": "✓ Switched active account for github.com\n✓ Reviewed pull request #32\nhttps://github.com/example/repo/pull/32\n✓ Switched active account for github.com",
+                  "is_error": false
+                }
+              },
+              "tool_result_is_error": false
+            }
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 29902,
+        "completion_tokens": 918,
+        "cached_tokens": 29516,
+        "cost_usd": 0.0130956,
+        "extra": {
+          "cache_creation_input_tokens": 384,
+          "cache_read_input_tokens": 29516,
+          "output_tokens_details": {
+            "thinking_tokens": 53
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 384,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "tool_use",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    },
+    {
+      "step_id": 8,
+      "timestamp": "2026-11-05T05:56:30.652Z",
+      "source": "agent",
+      "model_name": "claude-sonnet-5-5",
+      "message": "PR #32 は差し戻しました（`qm-bot` の `REQUEST_CHANGES`、label は `review:blocked`）。手持ちを超える出庫が通ってしまうためです（S1）。\n\n- **不具合:** `src/move.sh:11` の `[[ ! \"$qty\" > \"$have\" ]]` は、`[[ ]]` の中では文字列（辞書順）比較になります。決定 0001 は整数比較を求めています。\n- **再現:** HEAD `48c2ff2` で、台帳に B-010 の入庫 8 だけがある状態で `move.sh B-010 10 OUT SO-1` を実行しました。`recorded: OUT 10 B-010` と出て exit 0 になり、手持ちは -2 になりました。桁数が違う数量で起きます。\n- **修正案:** 元の `-lt` を `-le` に変えるだけです（`[ \"$qty\" -le \"$have\" ]`）。\n- **spec の穴（S2）:** `spec/move_out.spec.sh` の超過ケースは 6 of 5 だけです。桁数が違う超過（例: 手持ち 8 に 10）を足してもらうよう書きました。\n- **CI:** `spec` と `lint` はどちらも SUCCESS で、最終 commit より後に完了しています。ただし spec はこの不具合を検出できていません。\n\n未確認は 2 点です。lint の CI ログは開いていません。`data/` と `tools/` は差分に無いので見ていません。\n\nPR #32 の branch を一時的に checkout して実行したので、作業ツリーは `develop` に戻してあります。承認用アカウントは `qm-bot` に切り替えて、レビュー後に既定の `you` へ戻しました。",
+      "metrics": {
+        "prompt_tokens": 30880,
+        "completion_tokens": 590,
+        "cached_tokens": 29900,
+        "cost_usd": 0.011339000000000002,
+        "extra": {
+          "cache_creation_input_tokens": 978,
+          "cache_read_input_tokens": 29900,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 978,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "global",
+          "iterations": [],
+          "speed": "standard",
+          "fallback_credit": null,
+          "cost_source": "litellm_estimate"
+        }
+      },
+      "llm_call_count": 1,
+      "extra": {
+        "stop_reason": "end_turn",
+        "is_sidechain": false,
+        "cwd": "/app"
+      }
+    }
+  ],
+  "final_metrics": {
+    "total_prompt_tokens": 169067,
+    "total_completion_tokens": 2404,
+    "total_cached_tokens": 161375,
+    "total_cost_usd": 0.0709215,
+    "total_steps": 8,
+    "extra": {
+      "service_tiers": [
+        "standard"
+      ],
+      "total_cache_creation_input_tokens": 7680,
+      "total_cache_read_input_tokens": 161375
+    }
+  }
+}

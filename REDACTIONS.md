@@ -53,3 +53,35 @@ statsig・telemetry・認証情報・`settings*.json` の形のファイルも�
 | 創業者の個人名と、その出典の URL 2 本（サービスのサイト・LinkedIn） | 1 か所 | 「個人名のため省略」「（出典 URL 省略）」 |
 
 `docs/research/research-market.md` の調査内容（規約の要約・数値・判断）はそのまま残しています。
+
+---
+
+# 2026-11-12 のスナップショット（追記）
+
+非公開の作業リポジトリのコミット `198869121b2cad4fffedc1a118a0f1365dfd0729` の内容を、上のスナップショットの上に 1 コミットで重ねたものです。方法は上と同じで、台本は `scripts/publish-snapshot.py` です。値そのものはここに書きません。
+
+## 1. セッション状態ファイルの除外（23,252 ファイル。前回分を含む全体の数）
+
+| 除外したパターン（`runs/**/agent/sessions/` からの相対パス） | ファイル数 |
+|---|---|
+| `.claude.json` | 2,583 |
+| `.last-cleanup` | 2,581 |
+| `backups/.claude.json.backup.<n>` | 2,600 |
+| `plugins/store/*.json` | 2,583 |
+| `policy-limits.json` | 2,583 |
+| `policy-limits.json.signature.json` | 2,573 |
+| `policy-limits.json.stamp.json` | 2,583 |
+| `remote-settings.json` | 2,583 |
+| `remote-settings.json.synced-at` | 2,583 |
+
+## 2. 識別子の値
+
+除外したファイルから集めた値の数: アカウント ID 1、組織 ID 1、ワークスペース ID 1、`userID` 2,583、`machineID` 2,583。残したファイル全体を検索し、集めた値を含むファイルは **0 件**、署名付き JWT を含むファイルも **0 件** でした（0 件でなければ台本は commit を作らずに止まります）。
+
+## 3. マーケットプレイスの名前
+
+対象は前回と同じ 7 ファイルです。前回から変わっていないファイルは置き換え済みの版をそのまま使い、変わったファイルは置き換え済みの版にその後の差分を当てました。作業リポジトリ側で新しく固有名が書かれた行は 0 件です。
+
+## 4. 追加で除外したもの
+
+`experiments/live/out/`（4 ファイル）: 別のプロジェクトの実際の作業セッションを採点した出力です。採点の台本（`experiments/live/grade-session.mjs`）と仕様は残しています。

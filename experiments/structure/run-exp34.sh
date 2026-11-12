@@ -2,6 +2,7 @@
 # EXP-34 (card: docs/experiments/EXP-20261104-34-job-selection.md): 4 job-selection cells x 5 arms x 10.
 set -u -o pipefail
 cd /mnt/e/Github/pit-crew
+source experiments/quota.sh || exit 3
 source experiments/heavy-lock.sh exp34
 D=runs/2026-11-04
 S=suites/jobsel/suite.yaml

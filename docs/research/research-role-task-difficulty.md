@@ -77,7 +77,7 @@ GQ の Issue に付けた評価から見えた点（付録 B §5）:
 |---|---|---|---|
 | PO | 価値責任者（事業意図・顧客課題 → 何をどの順で作るか、G-2 要件合意・G-4 機能仕様承認、優先度）。戻せない操作とエスカレーションの段階 2・3 は事業決裁者（オーナー）が「記載された事業影響の受容」を決める | PO（`state:needs-po`）、オーナー（`state:needs-owner`） | PO |
 | Dev | 開発者（承認済みの実装計画の Task = 1 PR → 実装・テスト・挙動の検証）。**技術判断者**（機能仕様と非機能要件、AI が出した 2〜3 案 → G-3 技術設計判断、ADR）は別の席 | Dev。GQ には `needs-tech`（技術判断者の席）が無く、技術判断は Dev が持つ [`research-inventory.md` §process-compass との対応] | Dev |
-| review | 独立レビュア（PR = 変更単位 → G-6、受入基準と実装の一致、自分の言葉での挙動の要約） | QM の per-PR レビュー（5 手順） | rereview → Review [`research-inventory.md`] |
+| review | 独立レビュア（PR = 変更単位 → G-6、受入基準と実装の一致、自分の言葉での挙動の要約） | QM の per-PR レビュー（5 手順） | rereview → Review [`research-inventory.md`] **→ 訂正（オーナー 2026-11-04）: 会社の rereview は修正役（fix）。独立レビューは QM が持つ。`research-qm-review-role.md` §7.1** |
 | QM | 出荷判定者 QA（**出荷の範囲 = 複数の変更** → G-7、テストの消化・未解決欠陥・記録の欠落 0。停止権は基準の未充足と記録の欠落に限る） | QM の統合 PR・release cut、監査 | QM → Ship |
 | maintenance | AI 維持管理者（検査装置・指示資産の変更依頼 → 一貫性と鮮度、強制層の追加・削除・統合の承認、「矛盾そのものの除去」） | Platform（`state:needs-platform`） | maintenance → Platform |
 

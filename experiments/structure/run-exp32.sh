@@ -5,6 +5,7 @@
 # computed in the sandbox. Stops on free memory < 6G or 7-day usage >= 0.99.
 set -u -o pipefail
 cd /mnt/e/Github/pit-crew
+source experiments/quota.sh || exit 3
 source experiments/heavy-lock.sh exp32   # one heavy job per host (2026-11-03 memory stop)
 D=runs/2026-11-04
 mkdir -p $D

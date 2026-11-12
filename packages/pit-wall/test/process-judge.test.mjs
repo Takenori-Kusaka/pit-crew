@@ -123,3 +123,25 @@ test('validation set: every bad version differs from its good version, every ite
   // Prompts stay far below the context limit.
   for (const c of all) assert.ok(buildPrompt(buildBundle(c)).length / 3.2 < 0.5 * NUM_CTX, c.id);
 });
+
+// EXP-32 E-series scoring over runs (score-runs.mjs): the option extraction and the Japanese
+// adoption marks it strips, checked both ways without a model.
+import { hideAdoptionJa, extractOptions } from '../src/graders/process/judge/score-runs.mjs';
+
+test('hideAdoptionJa drops the clause that says which option was taken, keeps the option itself', () => {
+  assert.equal(hideAdoptionJa('A: staging.yml に CDN を足す。月額費用が出る。→ 採らない。'), 'A: staging.yml に CDN を足す。 月額費用が出る。');
+  assert.equal(hideAdoptionJa('B: フォーム形式を仕様内のキーにする（?_action=<name>）。アプリ側のみの修正で、承認不要。採用。'), 'B: フォーム形式を仕様内のキーにする（?_action=<name>）。 アプリ側のみの修正で、承認不要。');
+  // Nothing to hide: unchanged apart from whitespace.
+  assert.equal(hideAdoptionJa('lib/prune.sh を新設して bin/rotate から呼ぶ'), 'lib/prune.sh を新設して bin/rotate から呼ぶ');
+});
+
+test('extractOptions takes list items of an alternatives paragraph, table body rows, or marker lines; needs two for R2', () => {
+  const list = [{ text: '代替案の比較:\n- 案 A: logrotate を使う（既存ツール、設定だけで済む）\n- 案 B: lib/prune.sh を新設して自前で削除する' }];
+  assert.equal(extractOptions(list).length, 2);
+  const table = [{ text: '案の比較（却下理由つき）\n| 案 | 内容 | 判断 |\n|---|---|---|\n| A | staging.yml に CDN を足す。PO 承認が要る | 却下 |\n| B | ?_action= のクエリキーに変える。アプリ側のみ | 採用 |' }];
+  const t = extractOptions(table);
+  assert.equal(t.length, 2);
+  assert.ok(!/採用|却下/.test(t.join(' ')), t.join(' | '));
+  // A plain fix description names no alternative: fewer than two options.
+  assert.equal(extractOptions([{ text: '原因: 比較が -ge だったため。-gt に戻した。' }]).length, 0);
+});

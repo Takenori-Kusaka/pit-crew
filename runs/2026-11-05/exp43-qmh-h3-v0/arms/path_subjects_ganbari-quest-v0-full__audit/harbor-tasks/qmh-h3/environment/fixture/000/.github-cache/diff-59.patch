@@ -1,0 +1,108 @@
+diff --git a/spec/lowstock.spec.sh b/spec/lowstock.spec.sh
+new file mode 100644
+index 0000000..c5434d8
+--- /dev/null
++++ b/spec/lowstock.spec.sh
+@@ -0,0 +1,9 @@
++#!/bin/bash
++fail=0
++l=$(mktemp); i=$(mktemp)
++printf '# h\n2026-10-01\tA-100\t19\tIN\tPO-1\n2026-10-01\tA-200\t10\tIN\tPO-1\n2026-10-01\tB-010\t6\tIN\tPO-2\n' > "$l"
++printf '# sku\tname\tmin\nA-100\tbox-s\t20\nA-200\tbox-l\t10\nB-010\ttape\t5\n' > "$i"
++[ "$(LEDGER=$l ITEMS=$i bash src/lowstock.sh)" = 'A-100 box-s 19/20' ] || { echo "below the min listed; equal and above not"; fail=1; }
++[ -z "$(LEDGER=$l ITEMS=$i bash src/lowstock.sh 2>&1 >/dev/null)" ] || { echo "stderr not empty"; fail=1; }
++rm -f "$l" "$i"; exit $fail
++
+diff --git a/spec/move_out.spec.sh b/spec/move_out.spec.sh
+new file mode 100644
+index 0000000..2fb33fc
+--- /dev/null
++++ b/spec/move_out.spec.sh
+@@ -0,0 +1,8 @@
++#!/bin/bash
++fail=0
++t=$(mktemp); printf '# h\n2026-11-01\tB-010\t5\tIN\tPO-9\n' > "$t"
++LEDGER=$t bash src/move.sh B-010 6 OUT SO-1 >/dev/null 2>&1; [ $? = 1 ] || { echo "6 of 5 accepted"; fail=1; }
++LEDGER=$t bash src/move.sh B-010 5 OUT SO-2 >/dev/null 2>&1 || { echo "5 of 5 refused"; fail=1; }
++[ "$(grep -vc '^#' "$t")" = 2 ] || { echo "ledger rows: $(grep -vc '^#' "$t")"; fail=1; }
++rm -f "$t"; exit $fail
++
+diff --git a/spec/qty.spec.sh b/spec/qty.spec.sh
+new file mode 100644
+index 0000000..81f036c
+--- /dev/null
++++ b/spec/qty.spec.sh
+@@ -0,0 +1,9 @@
++#!/bin/bash
++fail=0
++t=$(mktemp); printf '# h\n' > "$t"
++LEDGER=$t bash src/move.sh A-100 0 IN PO-1 >/dev/null 2>&1; [ $? = 2 ] || { echo "0 accepted"; fail=1; }
++LEDGER=$t bash src/move.sh A-100 -3 IN PO-1 >/dev/null 2>&1; [ $? = 2 ] || { echo "-3 accepted"; fail=1; }
++LEDGER=$t bash src/move.sh A-100 007 IN PO-1 >/dev/null || { echo "007 refused"; fail=1; }
++[ "$(grep -vc '^#' "$t")" = 1 ] || { echo "ledger rows: $(grep -vc '^#' "$t")"; fail=1; }
++rm -f "$t"; exit $fail
++
+diff --git a/spec/report_sku.spec.sh b/spec/report_sku.spec.sh
+new file mode 100644
+index 0000000..1ec6b89
+--- /dev/null
++++ b/spec/report_sku.spec.sh
+@@ -0,0 +1,10 @@
++#!/bin/bash
++fail=0
++l=$(mktemp); i=$(mktemp)
++printf '# h\n2026-10-01\tA-100\t30\tIN\tPO-1\n2026-10-02\tB-010\t5\tIN\tPO-2\n' > "$l"
++printf '# sku\tname\tmin\nB-010\ttape\t8\nA-100\tbox-s\t20\n' > "$i"
++[ "$(LEDGER=$l ITEMS=$i bash src/report.sh --sku B-010)" = 'B-010 tape 5' ] || { echo "report --sku"; fail=1; }
++[ "$(LEDGER=$l ITEMS=$i bash src/report.sh)" = $'A-100 box-s 30\nB-010 tape 5' ] || { echo "report unchanged"; fail=1; }
++LEDGER=$l ITEMS=$i bash src/report.sh --sku Z-999 >/dev/null 2>&1; [ $? = 2 ] || { echo "unknown sku should exit 2"; fail=1; }
++rm -f "$l" "$i"; exit $fail
++
+diff --git a/src/lib/stock.sh b/src/lib/stock.sh
+index bfa89ae..084a58e 100644
+--- a/src/lib/stock.sh
++++ b/src/lib/stock.sh
+@@ -1,8 +1,8 @@
+ #!/bin/bash
+ # Ledger helpers. LEDGER rows: date<TAB>sku<TAB>qty<TAB>kind<TAB>ref (kind IN or OUT).
+ LEDGER=${LEDGER:-data/ledger.tsv}
+-# qty_ok QTY: succeeds when QTY is a whole number.
+-qty_ok() { [[ $1 =~ ^[0-9]+$ ]]; }
++# qty_ok QTY: succeeds when QTY is a whole number greater than 0.
++qty_ok() { [[ $1 =~ ^[0-9]+$ ]] && [ "$((10#$1))" -gt 0 ]; }
+ # onhand SKU: units in stock = IN total minus OUT total.
+ onhand() { awk -F'\t' -v s="$1" '!/^#/ && NF && $2 == s { if ($4 == "IN") t += $3; else t -= $3 } END { print t }' "$LEDGER"; }
+ 
+diff --git a/src/move.sh b/src/move.sh
+index 48e998f..290a3e9 100644
+--- a/src/move.sh
++++ b/src/move.sh
+@@ -8,7 +8,7 @@ qty_ok "$qty" || { echo "quantity must be a whole number: $qty" >&2; exit 2; }
+ case "$kind" in IN|OUT) ;; *) echo "kind must be IN or OUT: $kind" >&2; exit 2 ;; esac
+ if [ "$kind" = OUT ]; then
+   have=$(onhand "$sku")
+-  [ "$qty" -lt "$have" ] || { echo "insufficient: $sku has $have, asked for $qty" >&2; exit 1; }
++  [ "$qty" -le "$have" ] || { echo "insufficient: $sku has $have, asked for $qty" >&2; exit 1; } # equal is allowed (decision 0001)
+ fi
+ printf '%s\t%s\t%s\t%s\t%s\n' "$TODAY" "$sku" "$qty" "$kind" "$ref" >> "$LEDGER"
+ echo "recorded: $kind $qty $sku ($ref)"
+diff --git a/src/report.sh b/src/report.sh
+index 86e7d2d..e089043 100644
+--- a/src/report.sh
++++ b/src/report.sh
+@@ -1,10 +1,14 @@
+ #!/bin/bash
+-# report.sh: on-hand per item, one per line "SKU NAME ONHAND", sorted by SKU. src/lowstock.sh reads this.
++# report.sh [--sku SKU]: on-hand per item, one per line "SKU NAME ONHAND", sorted by SKU. src/lowstock.sh reads this.
+ set -u
+ . "$(dirname "$0")/lib/stock.sh"
+ ITEMS=${ITEMS:-data/items.tsv}
++only=
++if [ "${1:-}" = --sku ]; then only=${2:-}; [ -n "$only" ] || { echo "usage: report.sh [--sku SKU]" >&2; exit 2; }; shift 2; fi
++if [ -n "$only" ] && ! awk -F'\t' -v s="$only" '!/^#/ && $1 == s { f = 1 } END { exit !f }' "$ITEMS"; then echo "unknown sku: $only" >&2; exit 2; fi
+ while IFS=$'\t' read -r sku name min; do
+   case "$sku" in '#'*|'') continue ;; esac
++  [ -z "$only" ] || [ "$sku" = "$only" ] || continue
+   echo "$sku $name $(onhand "$sku")"
+ done < "$ITEMS" | sort
+ 

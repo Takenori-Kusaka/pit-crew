@@ -136,6 +136,23 @@ export function lintCase(kase) {
   return problems;
 }
 
+// Provenance of a cell (experiments/qm/README.md §Provenance; borrowed from NeMo Eval Author,
+// owner 2026-11-11): warnings, not failures — cells made before the rule exist without it.
+export const PROVENANCE_SOURCES = new Set(['incident', 'trace', 'synthetic']);
+export const PROVENANCE_TRUTHS = new Set(['reference-script', 'design-doc', 'owner-decision', 'derived-by-rederivation']);
+export const NO_CANDIDATE_REASONS = new Set(['not-reproducible', 'needs-multi-step', 'truth-unknown', 'duplicate-type', 'answer-in-task-text', 'too-easy', 'out-of-scope']);
+export function lintProvenance(kase) {
+  const p = kase.provenance;
+  if (!p) return ['no provenance (source / ref / truth); required for cells made after 2026-11-11'];
+  const w = [];
+  if (!PROVENANCE_SOURCES.has(p.source)) w.push(`provenance.source "${p.source}" not in ${[...PROVENANCE_SOURCES].join('|')}`);
+  if (!p.ref) w.push('provenance.ref missing (a pointer a reader can open)');
+  if (p.truth === 'agent-answer') w.push('provenance.truth "agent-answer": what an agent did is evidence of a type, not the truth of the cell');
+  else if (!PROVENANCE_TRUTHS.has(p.truth)) w.push(`provenance.truth "${p.truth}" not in ${[...PROVENANCE_TRUTHS].join('|')}`);
+  if (p.candidate === 'no' && !NO_CANDIDATE_REASONS.has(p.reason)) w.push(`provenance.reason "${p.reason}" not in ${[...NO_CANDIDATE_REASONS].join('|')}`);
+  return w;
+}
+
 // Harness leakage (the reverse of lintCase): text given to an arm (skills, a policy in
 // the system prompt) that repeats material specific to a cell lets a run copy the
 // cell's answer instead of applying a rule. Reported for a person to read:

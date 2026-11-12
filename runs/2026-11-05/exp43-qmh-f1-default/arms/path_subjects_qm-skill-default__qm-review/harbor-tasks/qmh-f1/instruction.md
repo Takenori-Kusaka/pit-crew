@@ -1,0 +1,3 @@
+/qm-review PR #33 のレビューをお願いします（レーン: develop）。
+
+The GitHub CLI (`gh`) is available and already authenticated for example/stockcount.

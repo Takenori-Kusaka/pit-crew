@@ -72,7 +72,7 @@ pit-crew では依頼の種類を次の 7 つに置く。分け方は ITIL の 4
 | QM（出荷判定） | QA 出荷判定者（G-7。ラベルでは起動しない） | 監査（統合 PR・release cut、`needs-audit`） | audit, policy-compliance, deploy-verify, live-ui-verification, ui-defect-hunt |
 | maintenance | AI 維持管理者（`state:needs-platform`） | Platform（`needs-platform`） | platform |
 
-出典: process-compass `roles-responsibilities.md` L700-712 のラベルの語彙 [一次]、GQ label-mailbox.md §3.1 L41-62・§3.3 L139-150 [一次]、skills 名は `.claude/skills/` の一覧 [一次]。会社の分け方（PO / Dev / QM / rereview / maintenance）との対応は難易度の調査 §2（rereview → review、QM → 出荷判定）
+出典: process-compass `roles-responsibilities.md` L700-712 のラベルの語彙 [一次]、GQ label-mailbox.md §3.1 L41-62・§3.3 L139-150 [一次]、skills 名は `.claude/skills/` の一覧 [一次]。会社の分け方（PO / Dev / QM / rereview / maintenance）との対応は難易度の調査 §2（rereview → review、QM → 出荷判定）。**→ 訂正（オーナー 2026-11-04）**: 会社の rereview は独立レビュアではなく **fix（QM の指摘・バグ・軽微な修正を低コストのモデルで回す修正役）**。独立レビュー（G-6）と出荷判定（G-7）は**両方 QM が持つ**（スキルは `qm-review` / `qm-ship` の 2 本）。本表の「review」行は QM の review 工程と読む。詳細は `research-qm-review-role.md` §7.1
 
 **注意**: GQ の QM は「レビューして自分で直して merge する」（憲章 §0 ルール 2）ため、review と修正（Dev の改修）を 1 ロールで持つ。process-compass は開発者と独立レビュアを別の席にし、3 名以上では出荷判定者が開発者とも独立レビュアとも兼ねない [一次: ADR-0066 決定 1]。汎用版は process-compass の分け方を既定にし、GQ の形は「一人体制のプロファイル」として逸脱を記録する（棚卸し 1 §core と adapter の既定の構成）
 
@@ -381,6 +381,7 @@ process-compass の `next.mjs` は、作業単位の状態（成果物の有無�
 ## オーナーの決定（2026-11-04）
 
 - 汎用版の PO の決定範囲の既定は **ピットイン型**（G-2 機能仕様の承認・G-4 実装計画の承認・範囲の約束・リスクの受容を含む）。GQ が 2 つに絞っているのは GQ 固有の事情として、GQ のアダプタの値にする。どちらも案件アダプタで変えられる
+- **QM と fix（2026-11-04、`research-qm-review-role.md` §7.1）**: 独立レビュー（§2.4 RV-1〜6）と出荷判定（§2.5 QS-1〜7）は両方 **QM** の仕事（スキル 2 本 + 共通原則）。独立レビューの席は修正を書かない。修正は新設の **fix** ロール（会社の rereview に当たる。QM の差し戻しの解消 / バグ修正 / 依存更新の追随 / 軽微な改修を、低コストのモデルで高い回転率でこなす。Dev は新機能に専念する）。fix の仕事の一覧（FX-*）と宛先の規則は別に調査する。AI の判定を「判定」に数えるか「検出の層」に数えるかは案件アダプタの値 `verdict`（PoC / MVP = 最終、以降 = 検出の層）
 
 ## 将来のロール（オーナーの共有、2026-11-04）
 

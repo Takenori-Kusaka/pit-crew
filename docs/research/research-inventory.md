@@ -57,7 +57,7 @@
   - `needs-tech` がない（G-3 の技術判断者の席が空いている）
   - ラベルを遷移させる前に判定を記録する規則がない
   - QM が自分で直したものを自分で承認する
-- 会社のロールとの対応：rereview → Review、QM → Ship、maintenance → Platform（必要なら Ops を別に置く）
+- 会社のロールとの対応：rereview → Review、QM → Ship、maintenance → Platform（必要なら Ops を別に置く）**→ 訂正（オーナー 2026-11-04）: rereview は独立レビュアではなく修正役（fix。QM の指摘・バグ・軽微な修正を低コストのモデルで回す）。Review と Ship は両方 QM。`research-qm-review-role.md` §7.1**
 
 ## 会社で詰まった 3 点への対応状況
 

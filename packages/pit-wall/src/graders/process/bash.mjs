@@ -282,8 +282,11 @@ export function interpret(cmd, ctx, pipeInfo = {}) {
     const inPlace = args.some((w) => /^-(?:[nErsuz]*i|-in-place)/.test(w.value));
     const quiet = args.some((w) => /^-[a-zA-Z]*n/.test(w.value) && !w.value.startsWith('--')) || args.some((w) => w.value === '--quiet');
     const scripts = optValues(args, ['e'], ['--expression']).map((x) => x.value);
-    const pos = positional(args, new Set(['-e', '--expression', '-f']));
-    if (!scripts.length && pos.length) scripts.push(pos.shift());
+    const pos = positional(args, new Set(['-e', '--expression', '-f', '--file']));
+    // `-f script.sed`: the script is in a file, so every positional is a file to edit (the first
+    // one is not the script). What the script does is unknown; the write is still a write.
+    const scriptFile = args.some((w) => w.value === '-f' || w.value === '--file' || /^--file=/.test(w.value) || /^-[nErsuzi]*f$/.test(w.value));
+    if (!scripts.length && !scriptFile && pos.length) scripts.push(pos.shift());
     const files = pos;
     if (inPlace) for (const f of files) for (const p of P(f)) push({ type: 'write', path: p, text: scripts.join('\n'), authored: true, how: 'sed-i' });
     else for (const f of files) for (const p of P(f)) {
@@ -330,6 +333,9 @@ export function interpret(cmd, ctx, pipeInfo = {}) {
       const dest = normPath(pos.at(-1), ctx.cwd);
       for (const src of pos.slice(0, -1)) {
         const s = normPath(src, ctx.cwd);
+        // A source or destination the analyzer cannot resolve (a shell variable, an absolute
+        // temp path it drops) is not an action it can record.
+        if (s == null || dest == null) continue;
         const destIsDir = ctx.known.has(dest) ? false : pos.length > 2 || [...ctx.known].some((k) => k.startsWith(`${dest}/`));
         push({ type: 'write', path: destIsDir ? `${dest}/${s.replace(/^.*\//, '')}` : dest, text: null, authored: false, how: name, from: s });
         if (name === 'mv') push({ type: 'delete', path: s });
@@ -458,7 +464,7 @@ function ghActions(args, ctx, docs, push) {
     const n = num(positional(args.slice(2), new Set(['-R', '--repo', '--json', '-q', '--jq', '-t', '--template']))[0]);
     push({ type: 'gh', op: verb, kind: noun, number: n, comments: v.includes('--comments') || v.includes('-c') });
   } else if ((noun === 'issue' || noun === 'pr') && verb === 'list') push({ type: 'list', tool: `gh ${noun} list`, paths: [] });
-  else if ((noun === 'issue' || noun === 'pr') && ['create', 'comment', 'edit', 'review', 'close', 'merge'].includes(verb)) {
+  else if ((noun === 'issue' || noun === 'pr') && ['create', 'comment', 'edit', 'review', 'close', 'merge', 'ready'].includes(verb)) {
     const a = args.slice(2);
     const bodies = optValues(a, ['b'], ['--body']).map((x) => {
       const inside = docs.filter((d) => d.op >= x.word.start && d.op < x.word.end);
@@ -469,8 +475,37 @@ function ghActions(args, ctx, docs, push) {
       else push({ type: 'post-file', path: normPath(f.value, ctx.cwd) });
     }
     const titles = optValues(a, ['t'], ['--title']).map((x) => x.value);
-    const n = num(positional(a, new Set(['-b', '--body', '-F', '--body-file', '-t', '--title', '-R', '--repo', '-B', '--base', '-H', '--head', '-l', '--label', '--add-label', '-a', '--assignee', '-r', '--reviewer', '-m', '--milestone']))[0]);
-    push({ type: 'post', kind: noun, verb, number: n, body: bodies.join('\n\n') || null, title: titles.join(' ') || null });
+    // Labels added (`--add-label a,b` / `-l a`): a review cell's judgement may be a label.
+    const labels = optValues(a, ['l'], ['--add-label', '--label']).flatMap((x) => x.value.split(',').map((s) => s.trim()).filter(Boolean));
+    // The review's event (approve / request changes / comment-only); null when not stated.
+    const reviewEvent = verb !== 'review' ? null : v.some((w) => w === '-a' || w === '--approve') ? 'APPROVE' : v.some((w) => w === '-r' || w === '--request-changes') ? 'REQUEST_CHANGES' : v.some((w) => w === '-c' || w === '--comment') ? 'COMMENT' : null;
+    const n = num(positional(a, new Set(['-b', '--body', '-F', '--body-file', '-t', '--title', '-R', '--repo', '-B', '--base', '-H', '--head', '-l', '--label', '--add-label', '--remove-label', '-a', '--assignee', '--add-assignee', '--remove-assignee', '-r', '--reviewer', '--add-reviewer', '--remove-reviewer', '-m', '--milestone']))[0]);
+    push({ type: 'post', kind: noun, verb, number: n, body: bodies.join('\n\n') || null, title: titles.join(' ') || null, labels, reviewEvent });
+  } else if (noun === 'auth' && verb === 'switch') {
+    // The approver changes identity (shims/gh records later reviews as made by this user).
+    const u = optValues(args.slice(2), ['u'], ['--user'])[0]?.value ?? null;
+    push({ type: 'gh', op: 'auth-switch', kind: 'auth', number: null, user: u });
+  } else if (noun === 'api') {
+    // REST forms of the same effects (shims/gh gives them the same state). The position of a
+    // judgement made this way must be readable too, or a review grader's cut is unknown.
+    const a = args.slice(1);
+    const method = (optValues(a, ['X'], ['--method'])[0]?.value ?? '').toUpperCase();
+    const fields = optValues(a, ['f', 'F'], ['--raw-field', '--field']).map((x) => x.value);
+    const field = (k) => { const f = fields.find((x) => x.startsWith(`${k}=`)); return f == null ? null : f.slice(k.length + 1); };
+    const ep = positional(a, new Set(['-X', '--method', '-f', '--raw-field', '-F', '--field', '-H', '--header', '--input', '-q', '--jq', '-t', '--template', '--hostname', '--cache', '-p', '--preview']))[0] ?? '';
+    const path = ep.replace(/^https?:\/\/[^/]+/, '').replace(/^\/?repos\/[^/]+\/[^/]+\//, '').replace(/^\//, '');
+    const m = path.match(/^(pulls|issues)\/(\d+)(?:\/([a-z_]+))?/);
+    if (m) {
+      const kind = m[1] === 'pulls' ? 'pr' : 'issue', n = Number(m[2]), sub = m[3] ?? null;
+      const write = (method && method !== 'GET') || fields.length > 0 || a.some((w) => w.value === '--input');
+      const post = (verb, extra = {}) => push({ type: 'post', kind, verb, number: n, body: null, title: null, labels: [], reviewEvent: null, ...extra });
+      if (!write) push({ type: 'gh', op: 'view', kind, number: n, comments: sub === 'comments' });
+      else if (sub === 'reviews') post('review', { body: field('body'), reviewEvent: field('event') }); // event unknown (--input): read as a judgement
+      else if (sub === 'merge') post('merge');
+      else if (sub === 'comments') post('comment', { body: field('body') });
+      else if (sub === 'labels') post('edit', { labels: fields.filter((f) => /^labels\[\]=/.test(f)).map((f) => f.slice('labels[]='.length)) });
+      else post('edit', { body: field('body'), title: field('title') });
+    } else push({ type: 'other', name: 'gh api' });
   } else push({ type: 'other', name: `gh ${noun ?? ''} ${verb ?? ''}`.trim() });
 }
 

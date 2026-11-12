@@ -191,7 +191,10 @@ export function tokenSeen(vis, token, before, { word = true } = {}) {
 export function existsAnywhere(vis, token) {
   const re = new RegExp(`(^|[^\\w])${esc(norm(token))}($|[^\\w])`);
   if (vis.corpus.some((c) => re.test(c.text))) return true;
-  if (Object.values(vis.files).some((t) => t != null && re.test(t))) return true;
+  // End-state files, except the notes and docs the agent itself wrote: a fabricated path cited in
+  // the agent's own report is in that file, which would make every fabrication "exist" (found by
+  // the Q2 cells' controls, 2026-11-04: X was unreachable).
+  if (Object.entries(vis.files).some(([p, t]) => t != null && !(vis.firstWrite.has(p) && ['notes', 'docs'].includes(fileRole(p))) && re.test(t))) return true;
   for (const l of vis.codeLines) if (re.test(l)) return true;
   return false;
 }

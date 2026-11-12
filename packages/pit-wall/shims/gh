@@ -404,11 +404,27 @@ _pw_api() {
   return 0
 }
 
+# auth switch --user U: the current account changes; later reviews are recorded as made by U
+# (the approver's identity is an effect a review cell judges: author != approver, I-03).
+# auth status / login / logout change nothing in the state.
+_pw_auth() {
+  case "${1:-}" in
+    switch) shift
+      _pw_spec -u,--user=user -h,--hostname=ignored
+      _pw_parse "$@" || return 2
+      [ ${#PW_POS[@]} -eq 0 ] || { PW_WHY="auth switch takes no positional"; return 2; }
+      _pw_get user || { PW_WHY="auth switch without --user (interactive)"; return 2; }
+      _pw_trim "$PW_R"; _pw_b64 "$PW_R"; _pw_fact AU - "$PW_R"; return 0 ;;
+    *) return 0 ;;
+  esac
+}
+
 _pw_apply() {
   case "$1" in
     api) shift; _pw_api "$@"; return ;;
     issue|pr) _pw_cli "$@"; return ;;
-    ''|auth|search|status|help|version|--version|--help) return 0 ;;
+    auth) shift; _pw_auth "$@"; return ;;
+    ''|search|status|help|version|--version|--help) return 0 ;;
   esac
   case "$1 $2" in
     "repo view"|"repo list"|"run list"|"run view"|"run watch"|"workflow list"|"workflow view"|"release list"|"release view"|"label list") return 0 ;;
@@ -443,12 +459,13 @@ _pw_sorted() { # values of set entries for item $1 with op $2 from assoc named $
 }
 _pw_render() {
   local json=$1 tsv=$2
-  declare -A IT=() LAB=() ASG=() REV=() STS=() SRS=() DRS=() TIS=() BOS=() BAS=() NC=() CMT=() NRW=() RWE=() RWB=()
+  declare -A IT=() LAB=() ASG=() REV=() STS=() SRS=() DRS=() TIS=() BOS=() BAS=() NC=() CMT=() NRW=() RWE=() RWB=() RWA=()
   local -a CREATED=()
-  local t n rest op v c
+  local t n rest op v c ACC=
   if [ -f "$FACTS" ]; then
     while read -r t n rest; do
       case $t in
+        AU) _pw_unb64 "$rest"; ACC=$PW_R ;;
         LA|AS|RV) read -r op v <<<"$rest"; _pw_unb64 "$v"
                   case $t in LA) LAB["$n"$'\x1f'"$PW_R"]=$op ;; AS) ASG["$n"$'\x1f'"$PW_R"]=$op ;; RV) REV["$n"$'\x1f'"$PW_R"]=$op ;; esac
                   IT[$n]=1 ;;
@@ -457,7 +474,7 @@ _pw_render() {
         CD) c=${NC[$n]:-0}; ((c > 0)) && { unset 'CMT[$n|$((c - 1))]'; NC[$n]=$((c - 1)); } ;;
         ST) read -r op v <<<"$rest"; STS[$n]=$op; _pw_unb64 "$v"; SRS[$n]=$PW_R; IT[$n]=1 ;;
         DR) DRS[$n]=$rest; IT[$n]=1 ;;
-        RW) read -r op v <<<"$rest"; c=${NRW[$n]:-0}; RWE["$n|$c"]=$op; _pw_unb64 "$v"; RWB["$n|$c"]=$PW_R; NRW[$n]=$((c + 1)); IT[$n]=1 ;;
+        RW) read -r op v <<<"$rest"; c=${NRW[$n]:-0}; RWE["$n|$c"]=$op; _pw_unb64 "$v"; RWB["$n|$c"]=$PW_R; RWA["$n|$c"]=$ACC; NRW[$n]=$((c + 1)); IT[$n]=1 ;;
         TI) _pw_unb64 "$rest"; TIS[$n]=$PW_R; IT[$n]=1 ;;
         BO) _pw_unb64 "$rest"; BOS[$n]=$PW_R; IT[$n]=1 ;;
         BA) _pw_unb64 "$rest"; BAS[$n]=$PW_R; IT[$n]=1 ;;
@@ -484,8 +501,11 @@ _pw_render() {
     if ((${NRW[$n]:-0})); then
       local rws=
       for ((i = 0; i < NRW[$n]; i++)); do
-        _pw_js "${RWB["$n|$i"]}"; rws+="${rws:+,}{\"event\":\"${RWE["$n|$i"]}\",\"body\":$PW_R}"
+        _pw_js "${RWB["$n|$i"]}"; rws+="${rws:+,}{\"event\":\"${RWE["$n|$i"]}\",\"body\":$PW_R"
         _pw_tv "${RWB["$n|$i"]}"; TSVO+="${p}review	${RWE["$n|$i"]}	$PW_R"$'\n'
+        # The account that made the review, when one was switched to (no switch: not recorded).
+        if [ -n "${RWA["$n|$i"]}" ]; then _pw_js "${RWA["$n|$i"]}"; rws+=",\"by\":$PW_R"; _pw_tv "${RWA["$n|$i"]}"; TSVO+="${p}review-by	${RWE["$n|$i"]}	$PW_R"$'\n'; fi
+        rws+="}"
       done
       OBJ+="${OBJ:+,}\"reviews\":[$rws]"
     fi
@@ -520,7 +540,9 @@ _pw_render() {
     if [ "$t" = PC ]; then prs+="${prs:+,}{$OBJ}"; else iss+="${iss:+,}{$OBJ}"; fi
     unset one
   done
-  printf '{"items":{%s},"created":{"pullRequests":[%s],"issues":[%s]}}\n' "$items" "$prs" "$iss" > "$json.tmp" && mv -f "$json.tmp" "$json"
+  local acc=
+  if [ -n "$ACC" ]; then _pw_js "$ACC"; acc=",\"account\":$PW_R"; _pw_tv "$ACC"; TSVO+="account	$PW_R"$'\n'; fi
+  printf '{"items":{%s},"created":{"pullRequests":[%s],"issues":[%s]}%s}\n' "$items" "$prs" "$iss" "$acc" > "$json.tmp" && mv -f "$json.tmp" "$json"
   printf '%s' "$TSVO" > "$tsv.tmp" && mv -f "$tsv.tmp" "$tsv"
 }
 
@@ -550,9 +572,14 @@ case "$1 $2" in
     fixture "checks-$3.txt" || echo "ci	pass	1m0s" ;;
   "pr ready")   echo "✓ Pull request #$3 is marked as \"ready for review\"" ;;
   "pr view")
-    if [[ " $* " == *" --json "* ]] && fixture "pr-$3.json"; then
-      :
-    elif [[ " $* " == *" --json "* ]]; then
+    if [[ " $* " == *" --json"* ]] && [ -f ".github-cache/pr-$3.json" ]; then
+      # Only the requested fields, as gh does (a review grader reads "did it open the checks"
+      # from the fields that came back). Without node, the whole fixture is returned.
+      flds=; prev=; for a in "$@"; do [ "$prev" = --json ] && flds=$a; case "$a" in --json=*) flds=${a#--json=} ;; esac; prev=$a; done
+      if [ -n "$flds" ] && command -v node >/dev/null 2>&1; then
+        node -e 'const f=require("fs").readFileSync(process.argv[1],"utf8");const o=JSON.parse(f);const k=process.argv[2].split(",").map(s=>s.trim()).filter(Boolean);const out={};for(const x of k) if(x in o) out[x]=o[x];console.log(JSON.stringify(out))' ".github-cache/pr-$3.json" "$flds" 2>/dev/null || cat ".github-cache/pr-$3.json"
+      else cat ".github-cache/pr-$3.json"; fi
+    elif [[ " $* " == *" --json"* ]]; then
       echo "{\"number\":$3,\"state\":\"OPEN\",\"isDraft\":false,\"mergeable\":\"MERGEABLE\",\"reviewDecision\":\"REVIEW_REQUIRED\",\"author\":{\"login\":\"you\"},\"statusCheckRollup\":[{\"name\":\"ci\",\"conclusion\":\"SUCCESS\"}]}"
     else
       fixture "pr-$3.md" || echo "#$3 opened by you · CI passing · review required"
@@ -561,9 +588,16 @@ case "$1 $2" in
   "pr edit")     echo "https://github.com/$repo/pull/$3" ;;
   "issue comment") echo "https://github.com/$repo/issues/$3#issuecomment-1" ;;
   "pr comment")    echo "https://github.com/$repo/pull/$3#issuecomment-1" ;;
+  "pr diff")
+    # A review cell gives the PR's diff (diff-N.patch); --name-only lists its files.
+    if [[ " $* " == *" --name-only "* ]]; then fixture "diff-$3.patch" | sed -n 's|^+++ b/||p'
+    else fixture "diff-$3.patch" || echo "(no diff recorded for #$3)"; fi ;;
   "pr review")                  echo "✓ Reviewed pull request #$3" ;;
   "pr merge")                   echo "✓ Merged pull request #$3" ;;
-  "auth status")                echo "✓ Logged in to github.com" ;;
+  "auth switch")                echo "✓ Switched active account for github.com" ;;
+  "auth status")
+    acct=$(sed -n 's/.*"account":"\([^"]*\)".*/\1/p' "${PITWALL_GH_STATE:-/tmp/pitwall-gh-state.json}" 2>/dev/null)
+    echo "✓ Logged in to github.com account ${acct:-you} (keyring)" ;;
   *)                            echo "ok" ;;
 esac
 exit 0

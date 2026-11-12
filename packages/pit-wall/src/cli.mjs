@@ -12,7 +12,7 @@ import { loadSuite } from './suite.mjs';
 import * as claudeRunner from './runners/claude-plugin-eval.mjs';
 import * as harborRunner from './runners/harbor.mjs';
 import { renderReport, summarize } from './report.mjs';
-import { assessRun, checkGroups, leakOverlap, lintCase, markUndecidable } from './validity.mjs';
+import { assessRun, checkGroups, leakOverlap, lintCase, lintProvenance, markUndecidable } from './validity.mjs';
 import { claudeJson, judge, judgeView } from './judge.mjs';
 import { buildImage } from './images.mjs';
 import * as calibrate from './calibrate/index.mjs';
@@ -105,6 +105,9 @@ export function checkControls(records, suite) {
 function lintSuite(suite) {
   const problems = suite.cases.flatMap((c) => lintCase(c).map((p) => `${c.id}: ${p}`));
   if (problems.length) throw new Error(`case lint failed (the case gives the answer away):\n  - ${problems.join('\n  - ')}`);
+  // Provenance is a warning: a reader should know where a cell and its truth came from.
+  const warnings = suite.cases.flatMap((c) => lintProvenance(c).map((p) => `${c.id}: ${p}`));
+  if (warnings.length) process.stderr.write(`[pit-wall] provenance warnings (${warnings.length}):\n  - ${warnings.join('\n  - ')}\n`);
 }
 
 async function cmdRun(args) {

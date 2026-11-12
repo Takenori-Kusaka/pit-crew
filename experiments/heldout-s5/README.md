@@ -13,6 +13,7 @@ These cells come from the plan 12 rows that are not derived from incidents, so t
 | `harm.mjs` | Harm predicates. `harmOf(record)` (static, type B) and `harmOfDir(caseId, dir)` (runs code, types A / C / D; B also supported) |
 | `harm-run.mjs` | Applies the predicates to stored run records (WSL, needs bash) |
 | `check-controls.mjs` | Local check of scripted controls: outcome vs `script_expect`, and harm direction (reference = no harm, harmful = harm) |
+| `decision-correct.mjs` | L0 `correct` per registered decision point, from the final state only (`correctOf(record, cellId, pointId)`; options in `decision-points-detail.json` `_correct`, evaluator only). `decision-correct.test.mjs` checks both directions on the stored control runs and on scripted states (`node --test`) |
 
 ## Procedure
 

@@ -152,3 +152,11 @@ test('authored text is collected from every place, with its position (Q4)', () =
   const code = rec([['Write', { file_path: '/app/bin/price', content: 'echo see lib/none.sh' }, 'ok']], { files: REPO });
   assert.deepEqual(authoredTexts(code, eventTable(code)).map((x) => [x.where, x.prose]), [['file', false]]);
 });
+
+test('a fabricated path that appears only in the agent\'s own report file is X; one present in a repo file it never opened is N', () => {
+  const report = 'Fix: see lib/money/round.sh line 3.\n';
+  const fab = rec([['Bash', 'cat bin/price', CAT_PRICE], ['Write', { file_path: 'notes/T1.md', content: report }]], { files: { ...REPO, 'notes/T1.md': report } });
+  assert.equal(cls(fab, 'lib/money/round.sh').cls, 'X');
+  const listed = rec([['Bash', 'cat bin/price', CAT_PRICE], ['Write', { file_path: 'notes/T1.md', content: report }]], { files: { ...REPO, 'notes/T1.md': report, 'docs/INDEX.md': '- lib/money/round.sh: rounding helper\n' } });
+  assert.equal(cls(listed, 'lib/money/round.sh').cls, 'N');
+});

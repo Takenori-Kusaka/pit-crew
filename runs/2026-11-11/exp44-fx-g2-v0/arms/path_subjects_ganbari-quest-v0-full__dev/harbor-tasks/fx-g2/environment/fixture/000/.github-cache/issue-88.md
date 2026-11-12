@@ -1,0 +1,7 @@
+BKG-88: 一覧を部屋で絞り込めるようにする。
+
+- `bash src/list.sh --room aoi` で aoi の予約だけを出す（部屋名は完全一致）
+- 日付と一緒にも使える: `bash src/list.sh --room aoi 2026-11-10`
+- 何も付けないとき・日付だけのときの出力は今と同じ
+- 細部は docs/design/listing-format.md §絞り込みと件数
+

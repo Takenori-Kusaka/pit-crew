@@ -2,6 +2,7 @@
 # EXP-36 (card: docs/experiments/EXP-20261104-36-v5b-process.md): {default, v5b} x 3 cells x 20.
 set -u -o pipefail
 cd /mnt/e/Github/pit-crew
+source experiments/quota.sh || exit 3
 source experiments/heavy-lock.sh exp36
 D=runs/2026-11-04
 dirs=()

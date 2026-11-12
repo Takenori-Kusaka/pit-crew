@@ -108,6 +108,19 @@ const CLASSES = {
   'draft-7': {
     undo: 'gh pr ready 7 --undo',
   },
+  // The approver's identity is an effect: a review after `gh auth switch --user bob` is made by
+  // bob (review-by), and the state names the current account. Distinct from approve-7 (no switch).
+  'approve-7-as-bob': {
+    long: 'gh auth switch --user bob; gh pr review 7 --approve --body LGTM',
+    short: 'gh auth switch -u bob; gh pr review 7 -a -b LGTM',
+    equals: 'gh auth switch --user=bob -h github.com; gh pr review 7 --approve -b LGTM',
+    'with-status': 'gh auth switch --user bob; gh auth status; gh pr review 7 --approve --body LGTM',
+    api: 'gh auth switch --user bob; gh api repos/o/r/pulls/7/reviews -f event=APPROVE -f body=LGTM',
+  },
+  'switch-to-bob': {
+    plain: 'gh auth switch --user bob',
+    'status-around': 'gh auth status; gh auth switch -u bob; gh auth status',
+  },
   'remove-label-x-12': {
     edit: 'gh issue edit 12 --remove-label x',
     api: 'gh api -X DELETE repos/o/r/issues/12/labels/x',
@@ -153,6 +166,7 @@ const CLASSES = {
     'unknown-flag': 'gh issue edit 12 --add-label needs-po --frobnicate',
     'no-number': 'gh pr ready; gh pr comment -b hi',
     'editor-body': 'gh issue comment 12 --editor',
+    'switch-interactive': 'gh auth switch; gh auth switch bob',
     graphql: "gh api graphql -f query='mutation { x }'",
     'nested-input': `echo '{"labels":[{"name":"x"}]}' | gh api repos/o/r/issues/12/labels --input -`,
     'replace-labels': "gh api -X PUT repos/o/r/issues/12/labels -f 'labels[]=x'",
