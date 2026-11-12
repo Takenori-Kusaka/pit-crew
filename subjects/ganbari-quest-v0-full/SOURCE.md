@@ -5,3 +5,4 @@
 - Harbor の runner は `workspace/` を作業ツリーに置き、git から隠す（課題の履歴にも他の arm にも入らない）
 - 作り直し: `node experiments/structure/make-v0full.mjs <GQ のクローン>`。秘密の形（トークン・Webhook・鍵・メールアドレス）と会社の情報の語を検索し、1 つでもあれば止まる
 - 載せた文書: docs/sessions/dev-session.md、docs/sessions/README.md、docs/sessions/label-mailbox.md、docs/sessions/branch-strategy.md、docs/sessions/dev-process/README.md、docs/sessions/dev-process/anti-patterns.md、docs/sessions/dev-process/completion-principles.md、docs/sessions/dev-process/feature-change-lateral-spread.md、docs/sessions/dev-process/github-api-head-staleness.md、docs/sessions/dev-process/parallel-agent-ops.md、docs/sessions/dev-process/qm-fix-patterns.md、docs/sessions/dev-process/research-discipline.md
+- **公開版には中身を載せない**（オーナー 2026-11-13）。先に `make-v0.mjs` で `subjects/ganbari-quest-v0` を作り直してから、`make-v0full.mjs` を実行する。ライセンスは GQ と同じ AGPL-3.0

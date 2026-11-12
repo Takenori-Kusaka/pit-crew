@@ -38,7 +38,11 @@ EXCLUDE = [  # (label, regex on the path relative to agent/sessions/)
     ('plugins/store/*.json', r'plugins/store/[^/]+\.json$'),
     ('statsig / telemetry / credentials / settings*.json', r'(statsig/.*|telemetry/.*|\.credentials\.json|credentials.*|settings[^/]*\.json)$'),
 ]
-OTHER_EXCLUDE = [('experiments/live/out/ (graded output of live sessions in another project)', r'^experiments/live/out/')]
+OTHER_EXCLUDE = [('experiments/live/out/ (graded output of live sessions in another project)', r'^experiments/live/out/'),
+                 # owner 2026-11-13: GQ is a comparison target, not this repository's harness. The copies
+                 # are rebuilt from the public GQ commit by experiments/structure/make-v0.mjs and
+                 # make-v0full.mjs (byte-identical, checked 2026-11-13). SOURCE.md files stay as pointers.
+                 ('subjects/ganbari-quest-v0*/ (copy of the GQ harness; rebuild with make-v0.mjs / make-v0full.mjs)', r'^subjects/ganbari-quest-v0(-full)?/(?!SOURCE\.md$)')]
 MARKET_DOCS = ['docs/log/2026-10-31.md', 'docs/log/2026-11-01.md', 'docs/planning/00-owner-statements.md',
                'docs/planning/01-proposal.md', 'docs/research/README.md', 'docs/research/research-market.md',
                'docs/research/research-synthesis.md']
@@ -151,7 +155,8 @@ if leak or name_hits or jwt:
 
 today = datetime.date.today().isoformat()
 old = blob(base_blob('REDACTIONS.md')).decode('utf-8')
-rows = '\n'.join(f'| `{k}` | {v:,} |' for k, v in counts.items() if not k.startswith('experiments/'))
+SESSION_LABELS = {label for label, _ in EXCLUDE}
+rows ='\n'.join(f'| `{k}` | {v:,} |' for k, v in counts.items() if k in SESSION_LABELS)
 section = f"""
 
 ---
@@ -160,7 +165,7 @@ section = f"""
 
 非公開の作業リポジトリのコミット `{src}` の内容を、上のスナップショットの上に 1 コミットで重ねたものです。方法は上と同じで、台本は `scripts/publish-snapshot.py` です。値そのものはここに書きません。
 
-## 1. セッション状態ファイルの除外（{sum(v for k, v in counts.items() if not k.startswith('experiments/')):,} ファイル。前回分を含む全体の数）
+## 1. セッション状態ファイルの除外（{sum(v for k, v in counts.items() if k in SESSION_LABELS):,} ファイル。前回分を含む全体の数）
 
 | 除外したパターン（`runs/**/agent/sessions/` からの相対パス） | ファイル数 |
 |---|---|
@@ -175,6 +180,8 @@ section = f"""
 対象は前回と同じ 7 ファイルです。前回から変わっていないファイルは置き換え済みの版をそのまま使い、変わったファイルは置き換え済みの版にその後の差分を当てました。作業リポジトリ側で新しく固有名が書かれた行は 0 件です。
 
 ## 4. 追加で除外したもの
+
+`subjects/ganbari-quest-v0/`・`subjects/ganbari-quest-v0-full/` の中身（`SOURCE.md` を除く、{counts.get(OTHER_EXCLUDE[1][0], 0)} ファイル）: がんばりクエスト（AGPL-3.0）のハーネスの写しで、比較の相手として使ったもの（オーナー 2026-11-13: GQ が比較の相手ならはぶく）。公開されている GQ の commit `0b32d8bab2e0e6f7ac29eda3d8e646572189dd12` から `experiments/structure/make-v0.mjs` → `make-v0full.mjs` でバイト単位で同じものを作り直せる（2026-11-13 に確認）。**2026-11-04 と 2026-11-12 のスナップショットにはこの写しが入っている**（履歴は書き換えていない）。また、この写しを使った比較の実行記録（`runs/` の中）には、エージェントが読んだ文としてスキルの断片が残っている（採点の再現に要るので残した）
 
 `experiments/live/out/`（{counts[OTHER_EXCLUDE[0][0]]} ファイル）: 別のプロジェクトの実際の作業セッションを採点した出力です。採点の台本（`experiments/live/grade-session.mjs`）と仕様は残しています。
 """

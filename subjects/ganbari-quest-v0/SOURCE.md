@@ -6,3 +6,4 @@
 - 載せていないもの: hooks、settings、CLAUDE.md（プラグインとして読み込めるのは skills と agents だけ）
 - 秘密情報・会社の情報の検査: トークン・Webhook・メールアドレスの形、「会社」「社外秘」を検索して 0 件（2026-11-01）
 - 公開前に、中身を改めて確認すること（このリポジトリは現在ローカルのみ）
+- **公開版には中身を載せない**（オーナー 2026-11-13: GQ が比較の相手ならはぶく）。作り直し: `node experiments/structure/make-v0.mjs <公開の ganbari-quest のクローン>`（GQ commit `0b32d8bab2e0e6f7ac29eda3d8e646572189dd12`、`--check` でバイト単位の一致を確かめる）。ライセンスは GQ と同じ AGPL-3.0
