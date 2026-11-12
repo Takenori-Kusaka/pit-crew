@@ -17,6 +17,19 @@ out=$(QUOTA_ROOT=$T/none bash /mnt/e/Github/pit-crew/experiments/quota.sh); rc=$
 # sourced form stops the caller when used as `source ... || exit`
 ( QUOTA_ROOT=$T; source /mnt/e/Github/pit-crew/experiments/quota.sh || exit 3; echo "REACHED" ) > "$T/src.out" 2>&1
 grep -q REACHED "$T/src.out" && { echo "FAIL sourced did not stop"; fail=1; } || echo "ok: sourced over threshold stops the caller"
+# a script that sources it WITHOUT `|| exit` is ended too, with exit 3 (review 34 §11.B8)
+printf '#!/bin/bash
+source /mnt/e/Github/pit-crew/experiments/quota.sh
+echo REACHED
+' > "$T/plain.sh"
+QUOTA_ROOT=$T bash "$T/plain.sh" > "$T/plain.out" 2>&1; rc=$?
+{ [ $rc -eq 3 ] && ! grep -q REACHED "$T/plain.out"; } && echo "ok: sourced without || exit -> the script ends (rc 3)" || { echo "FAIL sourced without || exit went on (rc $rc)"; fail=1; }
+# ... and under the threshold the sourcing script goes on
+printf '#!/bin/bash
+source /mnt/e/Github/pit-crew/experiments/quota.sh
+echo REACHED
+' > "$T/go.sh"
+QUOTA_ROOT=$T/none bash "$T/go.sh" 2>&1 | grep -q REACHED && echo "ok: sourced, no reading -> the script goes on" || { echo "FAIL sourced under threshold stopped"; fail=1; }
 # a high reading from before the window reset is stale -> unknown -> go
 mk 2026-01-03 0.98 $PAST; sleep 0.2
 out=$(QUOTA_ROOT=$T bash /mnt/e/Github/pit-crew/experiments/quota.sh); rc=$?

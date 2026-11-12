@@ -5,7 +5,8 @@
 # 0.92 while the week's limit was already exhausted and a subagent died mid-task. So the stop
 # threshold applied here keeps a margin for that unseen consumption. Both directions are tested
 # by experiments/quota.test.sh.
-#   source experiments/quota.sh      -> sets QUOTA_UTIL (or "?") and stops the caller if over
+#   source experiments/quota.sh      -> sets QUOTA_UTIL (or "?"); if over, ENDS the sourcing script with
+#                                       exit 3 (an interactive shell gets return 3 instead)
 #   bash experiments/quota.sh        -> prints the reading
 QUOTA_STOP=${QUOTA_STOP:-0.95}
 QUOTA_ROOT=${QUOTA_ROOT:-/mnt/e/Github/pit-crew/runs}
@@ -28,6 +29,9 @@ fi
 echo "7-day usage (last reading) ${QUOTA_UTIL}, stop at >= ${QUOTA_STOP}"
 if [ "$QUOTA_UTIL" != "?" ] && awk "BEGIN{exit !($QUOTA_UTIL >= $QUOTA_STOP)}"; then
   echo "7-day usage ${QUOTA_UTIL} >= ${QUOTA_STOP}: not starting (write the status and the remaining plan)"
-  if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 3 2>/dev/null; fi
+  # Sourced by a script: end that script here (exit). A bare `return` would only come back to the
+  # caller, which then goes on unless it wrote `|| exit` (review 34 §11.B8). Only an interactive
+  # shell is returned to, so that sourcing by hand does not close the terminal.
+  if [ "${BASH_SOURCE[0]}" != "$0" ]; then case $- in *i*) return 3 ;; esac; fi
   exit 3
 fi

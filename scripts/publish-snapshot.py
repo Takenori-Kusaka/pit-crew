@@ -43,9 +43,12 @@ MARKET_DOCS = ['docs/log/2026-10-31.md', 'docs/log/2026-11-01.md', 'docs/plannin
                'docs/planning/01-proposal.md', 'docs/research/README.md', 'docs/research/research-market.md',
                'docs/research/research-synthesis.md']
 NAME = 'agen' + 'si'  # the marketplace's name, split so that this file does not contain it
-PREV_SOURCE = '1c1540ea8a5b93f5543858a0050f2fb7795d9c56'  # the private commit the base snapshot was made from
+PREV_SOURCE = None  # the private commit the base snapshot was made from: read from the base's REDACTIONS.md below
 
 src = git('rev-parse', SOURCE).strip(); base = git('rev-parse', BASE).strip()
+_prev = re.findall(r'コミット `([0-9a-f]{40})`', git('show', f'{base}:REDACTIONS.md'))
+if not _prev: sys.exit('REDACTIONS.md on the base names no source commit')
+PREV_SOURCE = _prev[-1]  # the latest snapshot's source: its public files align with this commit's files
 entries = [l.split('\t', 1) for l in git('ls-tree', '-r', src).split('\n') if l]
 paths = {p: meta.split()[2] for meta, p in entries}
 

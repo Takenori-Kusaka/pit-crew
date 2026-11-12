@@ -25,7 +25,7 @@ const arg = (name) => process.argv.find((a) => a.startsWith(`--${name}=`))?.slic
 const flag = (name) => process.argv.includes(`--${name}`);
 const root = 'runs/2026-11-12', prefix = arg('prefix') ?? 'exp45'; // --prefix=exp46 --arms=default-r1 for EXP-46
 const ARMS = (arg('arms') ?? 'vanilla,v0,default').split(',');
-const kept = JSON.parse(readFileSync('experiments/fix/sieve.json', 'utf8')).kept;
+const kept = arg('cases') ? arg('cases').split(',') : JSON.parse(readFileSync('experiments/fix/sieve.json', 'utf8')).kept; // --cases=fx-r1,.. --all for EXP-47
 const only = (arg('only') ?? '').split(',').filter(Boolean);
 const ids = kept.filter((id) => !only.length || only.includes(id));
 const runDir = (id, arm) => join(root, `${prefix}-${id}-${arm}`);
@@ -87,6 +87,7 @@ p ignoreChangedTree $(git diff --quiet "$R" -- .gitignore 2>/dev/null && echo 0 
 p dirty "$(git status --porcelain | grep -vc '^?? \\.fix-state\\.md$')"
 p dirtyList "$(git status --porcelain | tr '\\n' ';')"
 p changedOnTip "$(git diff --name-only "$R" "$TIP" | tr '\\n' ';')"
+p diff "$(git diff "$R" "$TIP" | base64 -w0)"
 p branches "$(git for-each-ref --format='%(refname:short)' refs/heads | tr '\\n' ';')"
 wt tip "$TIP" || exit 1
 ${probed.map((f) => `${fn(f.id)}; p "tip:${f.id}" $?`).join('\n')}
@@ -112,7 +113,7 @@ git update-ref "refs/heads/$BR" "$c"; rm -f /app/.fix-state.md
       const recs = load(id, arm);
       for (const r of recs) {
         const stored = r.state?.checks ?? {};
-        if (!AUDITED.some((nm) => stored[nm] !== undefined && stored[nm] !== 0)) continue;
+        if (!flag('all') && !AUDITED.some((nm) => stored[nm] !== undefined && stored[nm] !== 0)) continue;
         if ((n++ % sn) !== sk) continue;
         const row = { case: id, arm, trial: r.trial, validity: r.validity?.status ?? null, stored: Object.fromEntries(AUDITED.map((nm) => [nm, stored[nm]])), reproduced: false, why: [] };
         rows.push(row);
@@ -154,7 +155,7 @@ git update-ref "refs/heads/$BR" "$c"; rm -f /app/.fix-state.md
           row.reproduced = row.why.length === 0;
           ex('cat > /tmp/parts.sh', partsScript);
           row.parts = Object.fromEntries(ex('bash /tmp/parts.sh 2>/dev/null').stdout.split('\n').filter(Boolean).map((l) => { const i = l.indexOf('\t'); return [l.slice(0, i), l.slice(i + 1)]; }));
-          for (const key of Object.keys(row.parts)) if (key.startsWith('seg:') || key === 'texts') row.parts[key] = Buffer.from(row.parts[key], 'base64').toString('utf8');
+          for (const key of Object.keys(row.parts)) if (key.startsWith('seg:') || key === 'texts' || key === 'diff') row.parts[key] = Buffer.from(row.parts[key], 'base64').toString('utf8');
           row.expect = Object.fromEntries(cell.findings.map((f) => [f.id, f.expect]));
           ex('cat > /tmp/cf.sh', cfScript);
           row.cfStatus = ex('bash /tmp/cf.sh >/dev/null 2>&1; echo $?').stdout.trim();
