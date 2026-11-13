@@ -1,5 +1,6 @@
 // Real-repository tasks (plan 34 §9 instruments 2, 4, 6): materialising a pointer into arms,
 // the ignore-aware end-state capture, and the hidden checks with their controls.
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -120,6 +121,12 @@ test('contexts: every arm gets the history up to the pre-fix commit; A/B/C witho
   assert.equal(abc('log', '--format=%s', 'main').stdout.trim(), 'second\nfirst (#7)');
   assert.ok(abc('ls-tree', '-r', '--name-only', 'main').stdout.includes('docs/guide.md'));
   assert.equal(abc('blame', '--porcelain', 'main', '--', 'src/lib/b.ts').status, 0);
+  // the archive is owned by root (docker ADD keeps the archive's owner; git refuses a repository
+  // owned by another user: "dubious ownership", found in the image on 2026-11-13)
+  for (const c of [info.contexts.abc, info.contexts.d]) {
+    const t = spawnSync('tar', ['--numeric-owner', '-tvf', join(c, 'dotgit.tar').replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, x) => `/${x.toLowerCase()}`)], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+    assert.ok(t.length > 0 && t.every((l) => l.split(/\s+/)[1] === '0/0'), 'every entry 0/0');
+  }
   // shallow on request
   const sh = writeContexts({ ...task, id: 't2' }, { gitDir: s.dir, filteredDir: s.filtered, outDir: out, harness: HARNESS, depth: 1 });
   assert.deepEqual([sh.history.d.commits, sh.history.abc.commits], [1, 1]);
@@ -154,6 +161,8 @@ test('arms: same request; B adds one document hidden from git, C adds skills and
   assert.equal(existsSync(join(out, 'harbor', 'C', 'skills', 'dev', 'SKILL.md')), true);
   for (const arm of ['A', 'B', 'D']) assert.equal(existsSync(join(out, 'harbor', arm, 'skills')), false);
   assert.deepEqual([A.requirementsDocChars, B.requirementsDocChars, C.entry, C.skills, D.tree], [0, 18, '/dev', true, 'd']);
+  // B places exactly the given document: the recorded hash is that file's
+  assert.deepEqual([A.requirementsDocSha256, B.requirementsDocSha256], [null, createHash('sha256').update(readFileSync(doc)).digest('hex')]);
   // The hidden checks and the reference fix are only in tests/ (uploaded after the agent ends).
   for (const r of [A, B, C, D]) {
     assert.equal(read(r, 'tests/hidden/tests/unit/a-fix.test.ts').includes(SECRET), true);

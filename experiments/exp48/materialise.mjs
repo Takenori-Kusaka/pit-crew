@@ -60,7 +60,8 @@ if (cmd === 'derive') {
   const instruction = existsSync(instrFile) ? readFileSync(instrFile, 'utf8').trim() : '(scripted control: no request)';
   const r = compileArm(join(outDir, 'harbor', script ? `${arm}-${script}` : arm), task, arm, {
     gitDir: clone, instruction, script,
-    requirementsDoc: opt('requirements'),
+    // arm B: exactly the committed document (team lead 2026-11-13); --requirements only to override
+    requirementsDoc: opt('requirements', join(ROOT, 'experiments/exp48/arm-b-requirements.md')),
     skills: opt('skills', join(ROOT, 'subjects/dev-skill-default/skills')),
     entry: opt('entry', '/dev'),
   });

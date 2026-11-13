@@ -58,7 +58,7 @@ const perSample = samples.map((s) => {
 });
 
 const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).stdout.trim();
-const code = ['packages/pit-wall/shims/realrepo/gh.mjs', 'packages/pit-wall/src/realrepo/gh-snapshot.mjs', 'packages/pit-wall/src/realrepo/items.mjs', 'experiments/exp48/build-history-mirror.sh', 'experiments/quota.sh', 'packages/pit-wall/shims/realrepo/vitest-reporter.mjs', 'experiments/exp48/oracle-smoke.sh', 'experiments/exp48/build-images.sh', 'experiments/exp48/materialise.mjs', 'packages/pit-wall/src/gates.mjs', 'packages/pit-wall/src/realrepo/task.mjs', 'packages/pit-wall/src/realrepo/callers.mjs', 'packages/pit-wall/src/realrepo/gq-content.mjs', 'packages/pit-wall/src/graders/process/judge/jev-audit.mjs', 'packages/pit-wall/shims/realrepo/recorder.mjs', 'packages/pit-wall/shims/realrepo/node-wrapper.sh', 'packages/pit-wall/shims/realrepo/state-capture.mjs', 'packages/pit-wall/shims/realrepo/hidden-run.mjs', 'experiments/exp48/g4-in-image.mjs', 'experiments/exp48/run-g4.sh', 'experiments/exp48/harness-files.json'];
+const code = ['packages/pit-wall/shims/realrepo/gh.mjs', 'packages/pit-wall/src/realrepo/gh-snapshot.mjs', 'packages/pit-wall/src/realrepo/items.mjs', 'experiments/exp48/build-history-mirror.sh', 'experiments/quota.sh', 'packages/pit-wall/shims/realrepo/vitest-reporter.mjs', 'experiments/exp48/oracle-smoke.sh', 'experiments/exp48/build-images.sh', 'experiments/exp48/materialise.mjs', 'packages/pit-wall/src/gates.mjs', 'packages/pit-wall/src/realrepo/task.mjs', 'packages/pit-wall/src/realrepo/callers.mjs', 'packages/pit-wall/src/realrepo/gq-content.mjs', 'packages/pit-wall/src/graders/process/judge/jev-audit.mjs', 'packages/pit-wall/shims/realrepo/recorder.mjs', 'packages/pit-wall/shims/realrepo/node-wrapper.sh', 'packages/pit-wall/shims/realrepo/state-capture.mjs', 'packages/pit-wall/shims/realrepo/hidden-run.mjs', 'experiments/exp48/g4-in-image.mjs', 'experiments/exp48/run-g4.sh', 'experiments/exp48/harness-files.json', 'experiments/exp48/image-verify.sh', 'experiments/exp48/image-verify.mjs', 'experiments/exp48/depth-measure.mjs', 'experiments/exp48/candidates.json'];
 const result = {
   what: 'EXP-48 G4 raw result (machine). Not a verdict. Produced by experiments/exp48/run-g4.sh + g4-collect.mjs; run by the implementer, no model and no Harbor agent involved.',
   date: new Date().toISOString(),
@@ -72,6 +72,14 @@ const result = {
   // which measurements predate the second round (history, gh, graphify, 6,144 MiB): a phase file older than the images was not rerun
   round2: { historyMirror: existsSync(join(ROOT, 'local/exp48-gq/history-mirror.json')) ? JSON.parse(readFileSync(join(ROOT, 'local/exp48-gq/history-mirror.json'), 'utf8')) : null, rerunNeeded: 'every in-image phase: the images changed (history, tools). Blocked 2026-11-13: the host system drive is full and WSL does not start.' },
   samples: perSample,
+  // the candidates themselves (image-verify.sh / image-verify.mjs collect): the summary only; the rows are in experiments/exp48/image-verify.json
+  candidates: (() => {
+    const iv = existsSync(join(ROOT, 'experiments/exp48/image-verify.json')) ? JSON.parse(readFileSync(join(ROOT, 'experiments/exp48/image-verify.json'), 'utf8')) : null;
+    const disk = existsSync(join(ROOT, 'local/exp48-gq/verify/disk.tsv')) ? readFileSync(join(ROOT, 'local/exp48-gq/verify/disk.tsv'), 'utf8').trim().split('\n').map((l) => l.split('\t')) : [];
+    const gb = (v) => { const m = String(v ?? '').match(/([\d.]+)(kB|MB|GB|B)/); return m ? Number(m[1]) * { B: 1e-9, kB: 1e-6, MB: 1e-3, GB: 1 }[m[2]] : 0; };
+    const docker = disk.map((r) => { const kv = Object.fromEntries([...String(r[3] ?? '').matchAll(/(Images|Build Cache)=(\S+)/g)].map((m) => [m[1], m[2]])); return gb(kv.Images) + gb(kv['Build Cache']); });
+    return iv && { file: 'experiments/exp48/image-verify.json', sha256: sha(join(ROOT, 'experiments/exp48/image-verify.json')), summary: iv.summary, disk: { samples: disk.length, eFreeMiBMin: disk.length ? Math.min(...disk.map((r) => Number(r[2]))) : null, eFreeMiBMax: disk.length ? Math.max(...disk.map((r) => Number(r[2]))) : null, dockerImagesPlusCacheGBMax: docker.length ? Math.round(Math.max(...docker) * 100) / 100 : null } };
+  })(),
 };
 mkdirSync(join(ROOT, 'gates/exp48'), { recursive: true });
 writeFileSync(join(ROOT, 'gates/exp48/G4.result.json'), `${JSON.stringify(result, null, 1)}\n`);

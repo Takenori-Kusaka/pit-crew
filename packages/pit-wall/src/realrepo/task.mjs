@@ -174,7 +174,7 @@ export function writeHistory(dir, { source, commit, depth = 0 }) {
   const refs = lines(git(repo, ['for-each-ref', '--format=%(refname)']));
   if (refs.join(',') !== 'refs/heads/main') throw new Error(`history: unexpected refs ${refs.join(',')}`);
   const commits = Number(git(repo, ['rev-list', '--count', 'main']).toString('utf8').trim());
-  const r = spawnSync('tar', ['-cf', 'dotgit.tar', '-C', 'repo', '.git'], { cwd: dir });
+  const r = spawnSync('tar', ['--owner=0', '--group=0', '--numeric-owner', '-cf', 'dotgit.tar', '-C', 'repo', '.git'], { cwd: dir });
   if (r.status !== 0) throw new Error(`tar failed: ${String(r.stderr).slice(0, 200)}`);
   const treeLines = git(repo, ['ls-tree', '-r', 'main']).toString('utf8');
   rmSync(repo, { recursive: true, force: true });
@@ -365,7 +365,7 @@ export function compileArm(armDir, task, arm, { gitDir, instruction, requirement
   writeFileSync(join(armDir, 'harbor-tasks', '.agent-image'), JSON.stringify(agentImage));
   writeFileSync(join(armDir, 'harbor-tasks', '.script'), script ?? '');
   // What differs between arms, for the record (plan §4 "必ず記録するもの").
-  const facts = { task: task.id, arm, tree: treeKind(arm), entry: useEntry, requirementsDocChars: arm === 'B' && requirementsDoc && !script ? readFileSync(requirementsDoc, 'utf8').length : 0, skills: arm === 'C' && !script, script, instructionChars: instruction.length + (useEntry ? useEntry.length + 1 : 0) };
+  const facts = { task: task.id, arm, tree: treeKind(arm), entry: useEntry, requirementsDocChars: arm === 'B' && requirementsDoc && !script ? readFileSync(requirementsDoc, 'utf8').length : 0, requirementsDocSha256: arm === 'B' && requirementsDoc && !script ? createHash('sha256').update(readFileSync(requirementsDoc)).digest('hex') : null, skills: arm === 'C' && !script, script, instructionChars: instruction.length + (useEntry ? useEntry.length + 1 : 0) };
   writeFileSync(join(dir, 'arm.json'), JSON.stringify(facts, null, 1));
   return { dir, ...facts };
 }

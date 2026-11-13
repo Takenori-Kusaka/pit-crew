@@ -12,6 +12,7 @@
 // And the cross-check of §11.B6: every call of the trajectory that runs a check tool should
 // have a record, and every record a call; the two counts are what "no unrecorded form" means.
 import { openedCallers } from './callers.mjs';
+import { eventTable } from '../graders/process/events.mjs';
 
 const top = (records) => records.filter((r) => r.tool && r.tool !== 'npm' && r.tool !== 'npx');
 const norm = (p) => String(p ?? '').replace(/\\/g, '/').replace(/^\/app\//, '').replace(/^\.\//, '');
@@ -96,6 +97,34 @@ export function gradeE2(records, { finalSrcTree, changedFiles = [], lastEditTs =
 // R2 with the three caps: { n, opened, levels: { cap3, cap5, none }, rows }.
 export function gradeR2(record, registration, { cutoff, texts = {} } = {}) {
   return openedCallers(record, registration.callers ?? registration, { cutoff, texts });
+}
+
+// The position of the first edit of an implementation file (a write to a source path that is not
+// a test): R2's cutoff. Infinity when the trial never edits one.
+const TEST_PATH = /(^|\/)[^/]+\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)(tests?|__tests__|e2e)\//;
+export function firstImplEdit(record, { sourcePaths = ['src'] } = {}) {
+  const inSrc = (p) => sourcePaths.some((s) => p === s || p.startsWith(`${s}/`));
+  for (const e of eventTable(record).events) {
+    const w = e.writes.map((a) => norm(a.path)).find((p) => inSrc(p) && !TEST_PATH.test(p));
+    if (w) return e.pos;
+  }
+  return Infinity;
+}
+
+// All the readings of one trial that the instruments supply, wired together: R2 under the three
+// caps (registration = registerCallers() of the task, cutoff = the first implementation edit),
+// E1, E2 and the cross-check. The item table that turns these into scores is the designer's.
+//   trial = { record (normalised trajectory with state), records (readRecords), finalSrcTree, lastEditTs }
+//   task  = { registration, relatedTests, alreadyRed, changedFiles, sourcePaths }
+export function readTrial(trial, task) {
+  const cutoff = firstImplEdit(trial.record, { sourcePaths: task.sourcePaths ?? ['src'] });
+  const r2 = gradeR2(trial.record, task.registration, { cutoff, texts: task.callerTexts ?? {} });
+  return {
+    R2: { n: r2.n, opened: r2.opened, cutoff: Number.isFinite(cutoff) ? cutoff : null, cap3: r2.levels.cap3, cap5: r2.levels.cap5, none: r2.levels.none, blind: task.registration?.blind ?? null },
+    E1: gradeE1(trial.records, { finalSrcTree: trial.finalSrcTree, relatedTests: task.relatedTests ?? [], alreadyRed: task.alreadyRed ?? [] }),
+    E2: gradeE2(trial.records, { finalSrcTree: trial.finalSrcTree, changedFiles: task.changedFiles ?? [], lastEditTs: trial.lastEditTs ?? null }),
+    crossCheck: crossCheck(trial.record?.trajectory ?? trial.record, trial.records),
+  };
 }
 
 // ---- cross-check of calls and records (review §11.B6) ----------------------------------------

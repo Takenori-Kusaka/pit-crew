@@ -23,6 +23,15 @@ export function buildSnapshot({ issues, prs }, { repo, asOf, taskIssue = null, f
   const out = { repo, asOf: new Date(cut).toISOString(), defaultBranch, issuesComplete: false, issues: {}, prs: {}, labels: [], lastNumber: 0, meta: { issuesLeftOutEditedLater: 0, issuesAfterDate: 0, prsAfterDate: 0, prsLeftOutClosingTheIssue: 0, prsWithoutState: 0 } };
   const closes = (p) => (p.closingIssuesReferences?.nodes ?? p.closingIssuesReferences ?? []).some((r) => (r.number ?? r) === taskIssue);
   for (const i of issues) {
+    // The task's own issue is always there (the request is its text): in 3 of 28 candidates it was
+    // filed minutes to hours AFTER the pre-fix commit (found in the image, 2026-11-13), and
+    // `gh issue view <the task's issue>` must not answer "does not exist". It is shown open.
+    if (i.number === taskIssue && iso(i.createdAt) > cut) {
+      // lastNumber is not raised: numbers between the date and the issue still "did not exist yet"
+      out.meta.taskIssueFiledAfterDate = true;
+      out.issues[i.number] = { number: i.number, title: i.title, body: i.body ?? '', state: 'OPEN', createdAt: i.createdAt, closedAt: null, author: login(i.author), labels: names(i.labels), url: url('issues', i.number) };
+      continue;
+    }
     if (iso(i.createdAt) > cut) { out.meta.issuesAfterDate++; continue; }
     out.lastNumber = Math.max(out.lastNumber, i.number);
     if (i.number !== taskIssue && i.lastEditedAt && iso(i.lastEditedAt) > cut) { out.meta.issuesLeftOutEditedLater++; continue; }

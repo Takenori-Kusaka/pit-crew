@@ -7,6 +7,8 @@
 # Arm D uses the unfiltered clone. Run inside WSL (the rewrite runs on the Linux file system):
 #   bash experiments/exp48/build-history-mirror.sh
 set -eu
+# disk rule 1: stop below 40 GiB free on E: (the rewrite needs about 2 GiB more while it runs)
+a=$(df -BG --output=avail /mnt/e | tail -1 | tr -dc 0-9); [ "${a:-0}" -ge "${EXP48_MIN_E_G:-40}" ] || { echo "E: has ${a}G free: not starting"; exit 5; }
 cd /mnt/e/Github/pit-crew
 L=local/exp48-gq
 W=${EXP48_HIST_WORK:-$HOME/.cache/pit-wall/exp48-hist}
@@ -49,6 +51,8 @@ git -C "$W/gq-filtered.git" gc -q --prune=now
 t1=$(date +%s)
 rm -rf "$L/gq-filtered.git"
 cp -r "$W/gq-filtered.git" "$L/gq-filtered.git"
+# one history mirror only (disk rule 3, 2026-11-13): the working copy is deleted once copied
+rm -rf "$W/gq-filtered.git"
 node -e '
   const [before, after, sec, n, size] = process.argv.slice(1);
   require("fs").writeFileSync("local/exp48-gq/history-mirror.json", JSON.stringify({ tool: "git-filter-repo '"$TAG"' (MIT)", commitsBefore: +before, commitsAfter: +after, seconds: +sec, patterns: +n, sizeMiB: Math.round(+size / 1024) }, null, 1));

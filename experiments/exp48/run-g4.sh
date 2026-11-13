@@ -26,7 +26,8 @@ free_g() { free -g | awk '/^Mem:/{print $7}'; }
 need_mem() { m=$(free_g); if [ "$m" -lt 6 ]; then echo "free memory ${m}G < 6G: not starting $1"; exit 1; fi; }
 # Docker's store is inside the WSL disk: stop before it fills the drive that holds it (2026-11-13:
 # the host's system drive reached 0 bytes and WSL stopped).
-need_disk() { a=$(df -BG --output=avail / | tail -1 | tr -dc 0-9); if [ "${a:-0}" -lt "${G4_MIN_DISK_G:-20}" ]; then echo "less than ${G4_MIN_DISK_G:-20}G free on the WSL disk (${a}G): not starting $1"; exit 1; fi; }
+# The WSL disk now lives on E: (its own / reports the virtual size, not what is left): measure E:.
+need_disk() { a=$(df -BG --output=avail /mnt/e | tail -1 | tr -dc 0-9); if [ "${a:-0}" -lt "${EXP48_MIN_E_G:-40}" ]; then echo "less than ${EXP48_MIN_E_G:-40}G free on E: (${a}G): not starting $1"; exit 1; fi; }
 # one docker job at a time on this host
 if docker_phase; then source experiments/heavy-lock.sh exp48-g4; fi
 

@@ -54,7 +54,36 @@ Images: `pitwall/realrepo-node:<node version>` (agent image + node + recorder) �
 | C | same as A | the skill directory (`--skill`) and the entry `/dev` in front of the request — the wiring of EXP-32 (`experiments/structure/run-exp32.sh`: `path:<skills>@/dev`) |
 | D | nothing removed | nothing |
 
-All arms: one commit, no history, no remote.
+All arms (owner decision 2026-11-13): the history up to the pre-fix commit, no remote, one ref (`main`); A/B/C from the filtered mirror (`build-history-mirror.sh`: harness paths removed from every commit), D the real history. The fix commit is in no object store (checked in the image: `image-verify.json` `fixAbsent`). The gh stand-in with a snapshot as of the pre-fix commit in every arm; graphify in D where `graphify-out/` is tracked. B places exactly `experiments/exp48/arm-b-requirements.md` (its sha256 is recorded in the arm facts).
+
+## Checking the candidates in their images (no model)
+
+```
+node experiments/exp48/image-verify.mjs prepare [--force] [id ...]   # contexts, verifier inputs (Windows side)
+bash experiments/exp48/image-verify.sh [id ...]                     # WSL: per candidate build -> phases -> delete
+node experiments/exp48/depth-measure.mjs                            # full / 200 / 50 commits of history, sizes and times
+node experiments/exp48/image-verify.mjs collect                     # -> image-verify.json (tracked; pointers and numbers)
+```
+
+Run `image-verify.sh` so that the WSL VM stays up and the launching process is not reaped (2026-11-13: the run was killed by the host's memory-pressure reaper after 26 of 28 candidates; do not restart such a run without the owner).
+
+## Disk budget (measured 2026-11-13)
+
+The WSL disk is `E:\wsl\Ubuntu-24.04\ext4.vhdx` (65 GiB file, 38 GiB used inside): every byte docker writes comes from E:.
+`build-images.sh` stops below **40 GiB free on E:** (`EXP48_MIN_E_G`) and above **15 GiB of EXP-48 images** (`EXP48_MAX_IMAGES_G`, sum of image sizes, shared layers counted twice: conservative). `image-verify.sh` takes candidates lock file by lock file, deletes each tree image after its phases, deletes the dependency image after the last candidate of its lock file and prunes the build cache.
+
+| Item | Measured |
+|---|---|
+| node layer `pitwall/realrepo-node:22.23.2` (kept) | 0.98 GB |
+| dependency layer, one per lock file (17 lock files) | 1.90–2.51 GB each, 92–179 s to build |
+| tree layer per candidate and kind (history + checkout + gh snapshot; D adds graphify where tracked) | image 2.13–3.00 GB cumulative, 12–63 s to build |
+| history archive `dotgit.tar`, full history | 43–96 MiB (A/B/C 1,808 MiB over 28 candidates; D 1,879) |
+| same at `--depth 200` / `--depth 50` | 30–83 / 26–80 MiB (sums 1,156 / 1,031 MiB A/B/C); 2–10 s each, any depth |
+| graphify (PyPI `graphifyy` 0.9.107, Apache-2.0) + python3 | 191 MiB installed |
+| peak docker images + build cache during the 26-candidate run | 8.44 GB (images 3.04 + cache 3.68 at the largest point; shared layers counted in both) |
+| E: free during the run | 66.25–67.15 GB: the vhdx did not grow (space was free inside it) |
+| local contexts `local/exp48-gq/build/` | about 4 GB (28 candidates, both kinds) |
+| mirrors `gq.git` / `gq-filtered.git` (one each, under `local/exp48-gq/`) | 1.1 GB / 963 MiB |
 
 ## The instruments
 

@@ -166,8 +166,10 @@ if (phase === 'history') {
   const all = g('cat-file --batch-all-objects --batch-check').stdout.split('\n').filter(Boolean).map((l) => l.split(' '));
   const blobs = all.filter((o) => o[1] === 'blob' && Number(o[2]) <= (1 << 20)).map((o) => o[0]);
   let hits = 0; const hitBlobs = new Set();
-  for (let i = 0; i < blobs.length; i += 1500) {
-    const r = spawnSync('git', ['cat-file', '--batch'], { cwd: APP, input: `${blobs.slice(i, i + 1500).join('\n')}\n`, maxBuffer: 1 << 31 });
+  for (let i = 0; i < blobs.length; i += 500) {
+    const r = spawnSync('git', ['cat-file', '--batch'], { cwd: APP, input: `${blobs.slice(i, i + 500).join('\n')}\n`, maxBuffer: 1 << 30 });
+    // (1 << 31 overflowed to a negative maxBuffer and threw: found in the image, 2026-11-13)
+    if (r.error || r.status !== 0) throw new Error(`cat-file --batch failed: ${r.error?.code ?? r.status}`);
     const buf = r.stdout; let p = 0;
     while (p < buf.length) {
       const nl = buf.indexOf(10, p); if (nl === -1) break;

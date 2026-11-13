@@ -104,3 +104,13 @@ test('the program: output, exit code and a log of every call outside the work tr
   const none = spawnSync(process.execPath, [GH, 'issue', 'view', '20'], { encoding: 'utf8', env: { ...env, PITWALL_GH_SNAPSHOT: join(d, 'missing.json') } });
   assert.deepEqual([none.status, none.stdout], [1, '']);
 });
+
+test('the task issue filed after the pre-fix commit is still answered (open); other later numbers stay unknown', () => {
+  const s = buildSnapshot(CACHE, { repo: 'o/r', asOf: '2026-05-20T00:00:00Z', taskIssue: 20, fixPr: 22 });
+  const r = answer(['issue', 'view', '20', '--json', 'number,state,closedAt'], s);
+  assert.equal(r.exit, 0);
+  assert.deepEqual(JSON.parse(r.stdout), { number: 20, state: 'OPEN', closedAt: null });
+  assert.equal(s.meta.taskIssueFiledAfterDate, true);
+  assert.equal(answer(['issue', 'view', '21'], s).answered, 'unresolved'); // created after the date, not the task: did not exist yet
+  assert.equal(answer(['pr', 'view', '22'], s).exit, 1);
+});

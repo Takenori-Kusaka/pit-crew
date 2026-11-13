@@ -2,7 +2,7 @@
 // trajectory calls against records (§11.B6).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { crossCheck, gradeE1, gradeE2, gradeR2, lintCovers, redFiles, toolsRun } from '../src/realrepo/items.mjs';
+import { crossCheck, gradeE1, gradeE2, gradeR2, lintCovers, readTrial, redFiles, toolsRun } from '../src/realrepo/items.mjs';
 import { rec } from './process-helpers.mjs';
 
 const F = 'f'.repeat(40), OLD = 'a'.repeat(40);
@@ -91,4 +91,31 @@ test('cross-check: calls without a record and records without a call are counted
   // a killed run is still a record
   assert.equal(crossCheck(traj, [...good.slice(0, 7), R('08', 'tsc', '07', false)]).openRecords, 1);
   assert.deepEqual([crossCheck({ steps: [] }, []).unrecordedForms, crossCheck({ steps: [] }, []).recordsNoCall], [0, 0]);
+});
+
+test('readTrial wires R2 (cutoff = first implementation edit, caps 3 / 5 / none), E1, E2 and the cross-check', () => {
+  const callers = ['src/lib/q.ts', 'src/lib/r.ts', 'src/lib/s.ts', 'src/lib/t.ts'];
+  const record = rec([
+    ['Read', { file_path: '/app/src/lib/q.ts' }, 'x'],
+    ['Write', { file_path: '/app/tests/unit/a.test.ts', content: 't' }, 'ok'], // a test edit is not the cutoff
+    ['Bash', 'cat src/lib/r.ts', 'y'],
+    ['Edit', { file_path: '/app/src/lib/a.ts', old_string: 'a', new_string: 'b' }, 'ok'], // cutoff
+    ['Bash', 'cat src/lib/s.ts src/lib/t.ts', 'z'], // too late
+    ['Bash', 'npx vitest run tests/unit/a.test.ts', 'ok'],
+    ['Bash', 'npx biome check src tests', 'ok'],
+  ]);
+  const records = [
+    { id: '01', tool: 'npx', parent: null, ended: true, ts: '2026-01-01T00:00:01Z', argv: ['npx'] },
+    vt('02', [['tests/unit/a.test.ts', 'passed']], { parent: '01' }),
+    { id: '03', tool: 'npx', parent: null, ended: true, ts: '2026-01-01T00:00:03Z', argv: ['npx'] },
+    { id: '04', tool: 'biome', parent: '03', argv: ['b', 'check', 'src', 'tests'], cwd: '/app', ts: '2026-01-01T00:00:04Z', ended: true, exit: 0, startSrcTree: F, endSrcTree: F },
+  ];
+  const t = readTrial({ record, records, finalSrcTree: F }, { registration: { callers, n: 4 }, relatedTests: REL, alreadyRed: RED, changedFiles: ['src/lib/a.ts', 'tests/unit/a.test.ts'] });
+  assert.equal(t.R2.cutoff, 3);
+  assert.deepEqual([t.R2.n, t.R2.opened, t.R2.cap3, t.R2.cap5, t.R2.none], [4, 2, 1, 1, 1]);
+  assert.deepEqual([t.E1.level, t.E2.level], [2, 2]);
+  assert.deepEqual([t.crossCheck.unrecordedForms, t.crossCheck.recordsNoCall], [0, 0]);
+  // no implementation edit at all: every opening counts (cutoff null)
+  const noEdit = readTrial({ record: rec([['Bash', 'cat src/lib/q.ts src/lib/r.ts src/lib/s.ts', 'x']]), records: [], finalSrcTree: F }, { registration: { callers } });
+  assert.deepEqual([noEdit.R2.cutoff, noEdit.R2.opened, noEdit.R2.cap3, noEdit.E1.level, noEdit.E2.level], [null, 3, 2, 0, 0]);
 });
