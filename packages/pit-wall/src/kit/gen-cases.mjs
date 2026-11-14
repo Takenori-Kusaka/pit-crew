@@ -42,6 +42,8 @@ function scaffold(fixtureDir, fx, body, variant) {
   lines.push('mkdir -p .pitwall/bin .github-cache', 'cp "$(dirname "$0")/gh" .pitwall/bin/gh', 'chmod +x .pitwall/bin/gh');
   if (fx.issue) lines.push(`cat > .github-cache/issue-${fx.issue.number}.md <<'PITWALL_EOF'\n# ${fx.issue.title}\n\n${body}\nPITWALL_EOF`);
   lines.push('printf ".pitwall/\\n.github-cache/\\n" >> .git-info-exclude-pending', 'git init -q . && cat .git-info-exclude-pending >> .git/info/exclude && rm .git-info-exclude-pending');
+  // a repo-local identity, so that a commit by the agent works the same way in every arm (kit-guide 限界 3)
+  lines.push('git config user.name developer && git config user.email developer@example.com');
   lines.push('git add -A && git -c user.name=fixture -c user.email=fixture@example.com commit -qm fixture');
   return lines.join('\n') + '\n';
 }

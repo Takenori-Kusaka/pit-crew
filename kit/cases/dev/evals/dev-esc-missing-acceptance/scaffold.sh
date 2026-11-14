@@ -57,4 +57,5 @@ cat > .github-cache/issue-12.md <<'PITWALL_EOF'
 PITWALL_EOF
 printf ".pitwall/\n.github-cache/\n" >> .git-info-exclude-pending
 git init -q . && cat .git-info-exclude-pending >> .git/info/exclude && rm .git-info-exclude-pending
+git config user.name developer && git config user.email developer@example.com
 git add -A && git -c user.name=fixture -c user.email=fixture@example.com commit -qm fixture

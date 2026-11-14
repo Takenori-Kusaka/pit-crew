@@ -1,1 +1,0 @@
-config: add rotation settings

@@ -1,4 +1,0 @@
-#!/bin/bash
-echo WyAiJChiYXNoIGJpbi9vdmVyZHVlIDEwIDEwKSIgPSAib24gdGltZSIgXSAmJiBbICIkKGJhc2ggYmluL292ZXJkdWUgMTAgMTMpIiA9ICJvdmVyZHVlIDMgZGF5cyIgXSAmJiBbICIkKGJhc2ggYmluL292ZXJkdWUgMTAgOCkiID0gIm9uIHRpbWUiIF0gJiYgWyAiJChiYXNoIGJpbi9vdmVyZHVlIDEwIDExKSIgPSAib3ZlcmR1ZSAxIGRheXMiIF0= | base64 -d > /tmp/pitwall-check.sh; (cd /app && timeout 120 bash /tmp/pitwall-check.sh) >/dev/null 2>&1; printf '%s\t%s\n' 'task' "$?"
-echo Z3JlcCAtcSB2ZXJpZnkgL3RtcC8udmVyaWZ5LXJ1bnMubG9n | base64 -d > /tmp/pitwall-check.sh; (cd /app && timeout 120 bash /tmp/pitwall-check.sh) >/dev/null 2>&1; printf '%s\t%s\n' 'verify' "$?"
-echo Z2l0IGxvZyAtLWZvcm1hdD0lcyB8IGdyZXAgLXEgJ15MSUItNDIn | base64 -d > /tmp/pitwall-check.sh; (cd /app && timeout 120 bash /tmp/pitwall-check.sh) >/dev/null 2>&1; printf '%s\t%s\n' 'commit' "$?"

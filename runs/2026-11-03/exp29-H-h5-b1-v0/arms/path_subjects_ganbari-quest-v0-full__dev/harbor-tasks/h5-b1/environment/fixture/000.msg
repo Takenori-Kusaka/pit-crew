@@ -1,1 +1,0 @@
-logrotate: initial import

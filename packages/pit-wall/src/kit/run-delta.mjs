@@ -16,6 +16,7 @@ const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i
 const role = opt('role'), casesDir = resolve(opt('cases', `kit/cases/${role}`)), harness = opt('harness');
 const entry = opt('entry', null), model = opt('model', 'claude-opus-5-5'), runs = Number(opt('runs', 1));
 const out = opt('out', `kit/results/${role}/delta.json`), specPath = opt('spec', `kit/roles/${role}.yaml`);
+const only = opt('arms', 'both');   // both | with | without (an arm shared across harnesses can be run once)
 if (!role || !harness) { console.error('usage: run-delta.mjs --role <id> --harness <dir> [--entry /cmd] [--model m] [--runs n]'); process.exit(1); }
 const spec = YAML.parse(readFileSync(specPath, 'utf8'));
 
@@ -49,7 +50,7 @@ function pluginDir(withHarness) {
 
 const arms = {};
 const RUNS = [];
-for (const [arm, withHarness] of [['without', false], ['with', true]]) {
+for (const [arm, withHarness] of [['without', false], ['with', true]].filter(([a]) => only === 'both' || only === a)) {
   const dir = pluginDir(withHarness);
   const res = pluginEval(dir, { trials: runs, model, outJson: join(dir, 'result.json'), needsShell: true, allowTools: ['Read', 'Edit', 'Write', 'Bash', 'Grep', 'Glob', 'Skill', 'WebFetch'], caseGlob: opt('case', process.env.PITWALL_CASE_GLOB || undefined) });
   arms[arm] = res.records.map((r) => {
@@ -70,6 +71,7 @@ for (const [arm, withHarness] of [['without', false], ['with', true]]) {
 }
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 const summary = (rs) => ({ runs: rs.length, errors: rs.filter((r) => r.error).length, conformance: mean(rs.filter((r) => r.conformance !== null).map((r) => r.conformance)), violations: rs.reduce((a, r) => a + r.violations, 0), passed: rs.filter((r) => r.pass).length, costUsd: rs.reduce((a, r) => a + (r.costUsd ?? 0), 0) });
+arms.with ??= []; arms.without ??= [];
 const W = summary(arms.with), O = summary(arms.without);
 const result = {
   role, model, runs, harness, entry, generated_at: new Date().toISOString(),

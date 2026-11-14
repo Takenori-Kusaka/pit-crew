@@ -76,13 +76,15 @@ export function perturbRole(spec, task) {
 
 export function perturbAll(root = '.') {
   const out = {};
-  for (const f of readdirSync(join(root, 'kit/roles')).filter((x) => x.endsWith('.yaml'))) {
-    const role = f.replace(/\.yaml$/, '');
-    const fxPath = join(root, 'kit/fixtures', `${role}-basic`, 'fixture.yaml');
+  // every fixture whose `role` has a spec; `<role>-basic` is reported as <role>, others by their directory name
+  for (const d of readdirSync(join(root, 'kit/fixtures'))) {
+    const fxPath = join(root, 'kit/fixtures', d, 'fixture.yaml');
     if (!existsSync(fxPath)) continue;
-    const spec = YAML.parse(readFileSync(join(root, 'kit/roles', f), 'utf8'));
     const fx = YAML.parse(readFileSync(fxPath, 'utf8'));
-    out[role] = perturbRole(spec, fx.task ?? {});
+    const specPath = join(root, 'kit/roles', `${fx.role}.yaml`);
+    if (!existsSync(specPath)) continue;
+    const spec = YAML.parse(readFileSync(specPath, 'utf8'));
+    out[d === `${fx.role}-basic` ? fx.role : d] = perturbRole(spec, fx.task ?? {});
   }
   return out;
 }

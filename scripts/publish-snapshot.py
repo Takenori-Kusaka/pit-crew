@@ -42,7 +42,11 @@ OTHER_EXCLUDE = [('experiments/live/out/ (graded output of live sessions in anot
                  # owner 2026-11-13: GQ is a comparison target, not this repository's harness. The copies
                  # are rebuilt from the public GQ commit by experiments/structure/make-v0.mjs and
                  # make-v0full.mjs (byte-identical, checked 2026-11-13). SOURCE.md files stay as pointers.
-                 ('subjects/ganbari-quest-v0*/ (copy of the GQ harness; rebuild with make-v0.mjs / make-v0full.mjs)', r'^subjects/ganbari-quest-v0(-full)?/(?!SOURCE\.md$)')]
+                 ('subjects/ganbari-quest-v0*/ (copy of the GQ harness; rebuild with make-v0.mjs / make-v0full.mjs)', r'^subjects/ganbari-quest-v0(-full)?/(?!SOURCE\.md$)'),
+                 # 2026-11-14: the same copies also sat inside runs/ (the arm's harness directory, and the
+                 # skills Claude Code installed into the agent's session). Transcripts stay (needed to regrade).
+                 ('runs/**/arms/*subjects_ganbari-quest-v0*/ and runs/**/<GQ arm>/agent/sessions/skills/ (copies of the GQ harness inside run records)',
+                  r'^runs/.*/arms/[^/]*subjects_ganbari-quest-v0[^/]*/|^runs/.*subjects_ganbari-quest-v0[^/]*/.*/agent/sessions/skills/')]
 MARKET_DOCS = ['docs/log/2026-10-31.md', 'docs/log/2026-11-01.md', 'docs/planning/00-owner-statements.md',
                'docs/planning/01-proposal.md', 'docs/research/README.md', 'docs/research/research-market.md',
                'docs/research/research-synthesis.md']
@@ -64,6 +68,10 @@ for p in paths:
         for label, rx in EXCLUDE:
             if re.fullmatch(rx, rel) or re.search(r'(^|/)' + rx, rel) and label.startswith('statsig'):
                 counts[label] += 1; removed.append(p); break
+        else:
+            # session files that are not session state can still be other exclusions (GQ skills in a session)
+            for label, rx in OTHER_EXCLUDE:
+                if re.search(rx, p): counts[label] += 1; removed.append(p); break
         continue
     for label, rx in OTHER_EXCLUDE:
         if re.search(rx, p): counts[label] += 1; removed.append(p)
@@ -181,7 +189,7 @@ section = f"""
 
 ## 4. 追加で除外したもの
 
-`subjects/ganbari-quest-v0/`・`subjects/ganbari-quest-v0-full/` の中身（`SOURCE.md` を除く、{counts.get(OTHER_EXCLUDE[1][0], 0)} ファイル）: がんばりクエスト（AGPL-3.0）のハーネスの写しで、比較の相手として使ったもの（オーナー 2026-11-13: GQ が比較の相手ならはぶく）。公開されている GQ の commit `0b32d8bab2e0e6f7ac29eda3d8e646572189dd12` から `experiments/structure/make-v0.mjs` → `make-v0full.mjs` でバイト単位で同じものを作り直せる（2026-11-13 に確認）。**2026-11-04 と 2026-11-12 のスナップショットにはこの写しが入っている**（履歴は書き換えていない）。また、この写しを使った比較の実行記録（`runs/` の中）には、エージェントが読んだ文としてスキルの断片が残っている（採点の再現に要るので残した）
+`subjects/ganbari-quest-v0/`・`subjects/ganbari-quest-v0-full/` の中身（`SOURCE.md` を除く、{counts.get(OTHER_EXCLUDE[1][0], 0)} ファイル）: がんばりクエスト（AGPL-3.0）のハーネスの写しで、比較の相手として使ったもの（オーナー 2026-11-13: GQ が比較の相手ならはぶく）。公開されている GQ の commit `0b32d8bab2e0e6f7ac29eda3d8e646572189dd12` から `experiments/structure/make-v0.mjs` → `make-v0full.mjs` でバイト単位で同じものを作り直せる（2026-11-13 に確認）。**2026-11-04 と 2026-11-12 のスナップショットにはこの写しが入っている**（履歴は書き換えていない）。同じ写しが `runs/` の中（比較の条件のハーネスのディレクトリ `runs/**/arms/*subjects_ganbari-quest-v0*/` と、エージェントのセッションに入れられたスキル `…/agent/sessions/skills/`）にも残っていたことに 2026-11-14 に気づき、このスナップショットから除いた（{counts.get(OTHER_EXCLUDE[2][0], 0)} ファイル。それ以前の公開のスナップショットには入っている）。また、この写しを使った比較の実行記録（`runs/` の中）には、エージェントが読んだ文としてスキルの断片が残っている（採点の再現に要るので残した）
 
 `experiments/live/out/`（{counts[OTHER_EXCLUDE[0][0]]} ファイル）: 別のプロジェクトの実際の作業セッションを採点した出力です。採点の台本（`experiments/live/grade-session.mjs`）と仕様は残しています。
 """

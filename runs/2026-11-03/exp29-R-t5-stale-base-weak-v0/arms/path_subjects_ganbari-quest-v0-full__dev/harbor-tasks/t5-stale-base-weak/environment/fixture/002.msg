@@ -1,1 +1,0 @@
-statement: add monthly statement

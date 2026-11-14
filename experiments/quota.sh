@@ -13,7 +13,9 @@ QUOTA_ROOT=${QUOTA_ROOT:-/mnt/e/Github/pit-crew/runs}
 # newest run directories first; the first utilization found is the latest reading
 QUOTA_UTIL="?"
 QUOTA_RESETS=""
-for d in $(ls -dt "$QUOTA_ROOT"/*/*/ 2>/dev/null | head -40); do
+# plugin-eval runs (the kit) write their records under /tmp/claude-eval-*, not runs/: read those too,
+# newest first across both (2026-11-14: runs/ alone gave 0.5 while the real reading was 0.89)
+for d in $(ls -dt "$QUOTA_ROOT"/*/*/ /tmp/claude-eval-*/ 2>/dev/null | head -40); do
   u=$(grep -rhoE '"utilization":[0-9.]+' "$d" 2>/dev/null | tail -1 | cut -d: -f2)
   if [ -n "$u" ]; then
     QUOTA_UTIL=$u

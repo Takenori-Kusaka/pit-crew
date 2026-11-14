@@ -178,6 +178,52 @@ const N = [
   ] },
 ];
 
+// --- goal 3 (docs/planning/38-dev-kit-evaluation.md): evaluate and improve the Dev harness with the kit ---
+const ARMS = ['none', 'default', 'gq-copy', 'v1'];
+const EVAL = 'kit/results/dev-eval';
+const committedBefore = (file, laterGlob) => {
+  // the card's first commit is older than the first commit of any result under `laterGlob`
+  const c = spawnSync('git', ['log', '--diff-filter=A', '--format=%ct', '--', file], { encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean).pop();
+  const r = spawnSync('git', ['log', '--diff-filter=A', '--format=%ct', '--', laterGlob], { encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean).pop();
+  if (!c) return [`${file} がコミットされていない`];
+  return r && Number(r) < Number(c) ? [`${laterGlob} の結果が ${file} より先にコミットされている`] : [];
+};
+const P = [
+  { id: 'P1', due: '2026-11-15', what: 'kit-check --goal 3 と、実行の前の実験カード', check: () => {
+    const card = 'docs/planning/38-dev-kit-evaluation.md', t = read(card), errs = [];
+    if (!t) return [`${card} がない`];
+    for (const [re, what] of [[/ハーネスなし/, 'ハーネスなし'], [/既定の Dev スキル/, '既定の Dev スキル'], [/GQ の写し/, 'GQ の写し'], [/役割ハーネス v1/, '役割ハーネス v1'],
+      [/主な量/, '主な量'], [/補助の量/, '補助の量'], [/「評価済み」と書く条件/, '「評価済み」と書く条件'], [/結果を見てから変えない/, '結果を見てから変えない'], [/限界 2/, '限界 2 の決定'], [/限界 3/, '限界 3 の決定']])
+      if (!re.test(t)) errs.push(`${card} に「${what}」が無い`);
+    return [...errs, ...committedBefore(card, `${EVAL}/*.json`)];
+  } },
+  { id: 'P2', due: '2026-11-16', what: 'Dev の 2 つ目の部品（別の題材）、ケース、植え込みの検査', check: () => {
+    const errs = [];
+    const fx = readdirSync('kit/fixtures').filter((d) => d.startsWith('dev-') && d !== 'dev-basic' && exists(`kit/fixtures/${d}/fixture.yaml`));
+    if (!fx.length) return ['kit/fixtures/dev-<名前>/（2 つ目の Dev の部品）がない'];
+    const d = fx[0];
+    if (!exists(`kit/cases/dev-${d.replace(/^dev-/, '')}`)) errs.push(`kit/cases/dev-${d.replace(/^dev-/, '')}（2 つ目の部品のケース）がない`);
+    errs.push(...runTest('packages/pit-wall/test/kit-perturb.test.mjs'));
+    return errs;
+  } },
+  { id: 'P3', due: '2026-11-18', what: '2 つの部品 × 4 条件の実行と、条件ごとの結果', check: () => [
+    ...jsonHas(`${EVAL}/summary.json`, (j) => ARMS.every((a) => Number.isFinite(j.arms?.[a]?.conformance)) && (j.fixtures?.length ?? 0) >= 2, `${EVAL}/summary.json に 2 つの部品 × 4 条件の準拠が無い`),
+    ...(/dev-eval/.test(read('docs/kit-guide.md')) ? [] : ['docs/kit-guide.md に Dev の評価の結果が無い']),
+    ...(/## 結果/.test(read('docs/planning/38-dev-kit-evaluation.md')) ? [] : ['カードに「## 結果」が無い']),
+  ] },
+  { id: 'P4', due: '2026-11-20', what: 'v1 の最多の型を記録から選び、1 回直した v1.1 を同じケースで回す', check: () => [
+    ...(exists('subjects/role-harness-v1.1') ? [] : ['subjects/role-harness-v1.1 がない']),
+    ...jsonHas(`${EVAL}/summary.json`, (j) => Number.isFinite(j.arms?.['v1.1']?.conformance), `${EVAL}/summary.json に v1.1 の結果が無い`),
+    ...(/## 改善（v1\.1）/.test(read('docs/planning/38-dev-kit-evaluation.md')) ? [] : ['カードに「## 改善（v1.1）」（選んだ型・記録の根拠・直した箇所・前後）が無い']),
+  ] },
+  { id: 'P5', due: '2026-11-21', what: '主張の台帳、公開の前提、承認依頼', check: () => [
+    ...((read('docs/claims.md').match(/^\| DK-\d+ \|/gm) ?? []).length >= 3 ? [] : ['docs/claims.md に Dev のキット評価の主張（DK-n）が 3 行以上無い']),
+    ...jsonHas('kit/results/publish-precheck-3.json', (j) => j.ci_green === true && j.secret_hits === 0 && j.identifier_hits === 0 && /^[0-9a-f]{40}$/.test(j.snapshot_commit ?? ''), 'kit/results/publish-precheck-3.json が満たされていない'),
+    ...(exists('kit/results/publish-precheck-3.json') ? ciGreenFor(JSON.parse(read('kit/results/publish-precheck-3.json') || '{}').snapshot_commit) : []),
+    ...(exists('kit/results/approval-request-3.md') ? [] : ['kit/results/approval-request-3.md（オーナーへの承認依頼）が無い']),
+  ] },
+];
+
 // `--spec <path>`: validate one role spec (for a new role) and exit
 if (process.argv.includes('--spec')) {
   const p = process.argv[process.argv.indexOf('--spec') + 1];
@@ -186,8 +232,10 @@ if (process.argv.includes('--spec')) {
   process.exit(errs.length ? 1 : 0);
 }
 const goal2 = process.argv.includes('--goal') && process.argv[process.argv.indexOf('--goal') + 1] === '2';
+const goal3 = process.argv.includes('--goal') && process.argv[process.argv.indexOf('--goal') + 1] === '3';
 if (goal2) M.splice(0, M.length, ...N);
-console.log(`kit-check${goal2 ? ' --goal 2' : ''}  今日 ${today} (JST)  期限 2026-11-21`);
+if (goal3) M.splice(0, M.length, ...P);
+console.log(`kit-check${goal2 ? ' --goal 2' : goal3 ? ' --goal 3' : ''}  今日 ${today} (JST)  期限 2026-11-21`);
 let allPass = true;
 for (const m of M) {
   const errs = m.check();

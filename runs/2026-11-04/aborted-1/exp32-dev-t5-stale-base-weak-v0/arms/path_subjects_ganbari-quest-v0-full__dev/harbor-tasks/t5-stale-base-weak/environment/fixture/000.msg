@@ -1,1 +1,0 @@
-price: member discount

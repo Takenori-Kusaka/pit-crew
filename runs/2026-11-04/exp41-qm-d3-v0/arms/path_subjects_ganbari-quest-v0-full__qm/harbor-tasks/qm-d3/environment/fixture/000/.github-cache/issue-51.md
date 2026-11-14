@@ -1,8 +1,0 @@
-BKG-51: 11:00 に終わる予約のすぐ後の 11:00 開始の予約が「conflict」で断られる。
-
-再現: `bash src/book.sh aoi 2026-11-12 10:00 11:00 sato` の後に `bash src/book.sh aoi 2026-11-12 11:00 12:00 ito` が conflict になる。
-
-期待: 終わりと始まりが同じ時刻の予約は衝突にしない。時間が重なる予約は今まで通り断る（docs/design/booking-rules.md §時間）。
-
-状態: open（担当未定）
-
