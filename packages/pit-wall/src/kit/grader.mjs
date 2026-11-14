@@ -8,6 +8,7 @@
 //   state:  { changed: [paths], checks_pass: bool|null, gh: [effect names] },
 //   task:   { <name>: value }                                // flags and ${task.x} substitutions
 //   kind?, target?                                           // case kind; an escalation case is scored on its target row
+//   final?                                                   // the agent's last message to the requester (text)
 // }
 // Use fromAtif(trajectory, state, task) to build a run from pit-wall's normalized trajectory.
 
@@ -56,7 +57,7 @@ function eventMatch(d, e, task) {
   }
   return true;
 }
-const STATE_KEYS = ['changed', 'changed_outside', 'checks_pass', 'gh', 'task'];
+const STATE_KEYS = ['changed', 'changed_outside', 'checks_pass', 'gh', 'task', 'final'];
 const EVENT_KEYS = ['tool', 'command', 'path', 'exit', 'removes'];
 
 // Evaluate a detector. Returns { hit: bool, at: index of the first matching event or -1 }.
@@ -82,6 +83,8 @@ export function evaluate(d, run, from = 0) {
     if (d.checks_pass !== undefined && state.checks_pass !== d.checks_pass) return { hit: false, at: -1 };
     if (d.gh !== undefined && !arr(d.gh).some((g) => arr(state.gh).includes(g))) return { hit: false, at: -1 };
     if (d.task !== undefined && !arr(d.task).every((t) => !!task?.[t])) return { hit: false, at: -1 };
+    // final: the agent's last message to the requester matches (goal 4: escalations were made there, not on the issue)
+    if (d.final !== undefined && !(typeof run.final === 'string' && new RegExp(subst(d.final, task), 's').test(run.final))) return { hit: false, at: -1 };
     if (!hasEvent) return { hit: true, at: -1 };
   }
   for (let i = from; i < events.length; i++) if (eventMatch(d, events[i], task)) return { hit: true, at: i };

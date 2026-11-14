@@ -58,6 +58,7 @@ for (const [arm, withHarness] of [['without', false], ['with', true]].filter(([a
     const runRec = fromAtif(r.trajectory, {}, kc.task);
     runRec.state = stateOf(runRec.events);
     runRec.kind = kc.kind; runRec.target = kc.target;
+    runRec.final = String(r.trajectory?.steps?.at(-1)?.message ?? '');   // the last message, kept whole for re-grading
     RUNS.push({ arm, case: r.case, trial: r.trial, ...runRec });
     const g = grade(spec, runRec);
     return { case: r.case, kind: kc.kind, trial: r.trial, error: r.error, costUsd: r.costUsd, durationSeconds: r.durationSeconds,

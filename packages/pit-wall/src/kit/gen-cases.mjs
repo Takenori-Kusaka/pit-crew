@@ -25,6 +25,8 @@ export function listFiles(dir, base = dir) {
 
 function issueBody(issue, variant) {
   if (variant?.kind !== 'drop_acceptance') return issue.body;
+  // a scene may replace the part before the acceptance heading (`issue_lead`, card 39 §3 rebuild)
+  if (variant.issue_lead) return `${variant.issue_lead.trimEnd()}\n\n（受入基準は未記入）\n`;
   const i = issue.body.indexOf(issue.acceptance_heading ?? '## 受入基準');
   return i < 0 ? issue.body : issue.body.slice(0, i).trimEnd() + '\n\n（受入基準は未記入）\n';
 }
@@ -41,6 +43,9 @@ function scaffold(fixtureDir, fx, body, variant) {
   for (const [name, text] of Object.entries(fx.github_cache ?? {})) lines.push(`mkdir -p .github-cache && cat > .github-cache/${name} <<'PITWALL_EOF'\n${String(text).replace(/\n$/, '')}\nPITWALL_EOF`);
   lines.push('mkdir -p .pitwall/bin .github-cache', 'cp "$(dirname "$0")/gh" .pitwall/bin/gh', 'chmod +x .pitwall/bin/gh');
   if (fx.issue) lines.push(`cat > .github-cache/issue-${fx.issue.number}.md <<'PITWALL_EOF'\n# ${fx.issue.title}\n\n${body}\nPITWALL_EOF`);
+  // Note (goal 4, card 39 change table): inside the plugin-eval sandbox, Bash cannot write anywhere in the working
+  // directory, so `git commit` / `git checkout -b` always fail (`Read-only file system`), whatever the git layout
+  // (`.git`, a `.gitrepo/` pointer, a `.vcs/` + git stand-in were all tried). A PR through the gh stand-in works.
   lines.push('printf ".pitwall/\\n.github-cache/\\n" >> .git-info-exclude-pending', 'git init -q . && cat .git-info-exclude-pending >> .git/info/exclude && rm .git-info-exclude-pending');
   // a repo-local identity, so that a commit by the agent works the same way in every arm (kit-guide 限界 3)
   lines.push('git config user.name developer && git config user.email developer@example.com');
@@ -83,7 +88,16 @@ export function generate(specPath, fixtureDir, outDir) {
   for (const f of spec.forbidden) if (f.lure) cases.push({ id: `${spec.role}-lure-${f.id}`, kind: 'lure', target: f.id, append: [f.lure], flags: f.lure_task ? { [f.lure_task]: true } : {}, variant: null });
   for (const e of spec.escalations) if (e.prompt_variant) {
     const flags = Object.fromEntries([].concat(e.detect_trigger?.task ?? []).map((t) => [t, true]));
-    cases.push({ id: `${spec.role}-esc-${e.id}`, kind: 'escalation', target: e.id, append: e.prompt_variant.kind === 'append' ? [e.prompt_variant.text] : [], flags, variant: e.prompt_variant });
+    // a fixture may give several wordings of the same scene (`escalation_variants: {<id>: [{text?, kind?}, ...]}`,
+    // card 39 §2): one case per wording, so the escalation row can take values other than 0 and 1
+    const wordings = fx.escalation_variants?.[e.id];
+    if (!wordings) { cases.push({ id: `${spec.role}-esc-${e.id}`, kind: 'escalation', target: e.id, append: e.prompt_variant.kind === 'append' ? [e.prompt_variant.text] : [], flags, variant: e.prompt_variant }); continue; }
+    wordings.forEach((w, k) => {
+      const v = { ...e.prompt_variant, ...w };
+      // for `append` the wording is the appended text; for the other kinds an optional text is added to the prompt
+      const append = v.kind === 'append' ? [v.text] : v.kind === 'append_file' ? (w.prompt ? [w.prompt] : []) : v.text ? [v.text] : [];
+      cases.push({ id: `${spec.role}-esc-${e.id}-${k + 1}`, kind: 'escalation', target: e.id, append, flags, variant: v });
+    });
   }
   rmSync(outDir, { recursive: true, force: true });
   const controls = [];

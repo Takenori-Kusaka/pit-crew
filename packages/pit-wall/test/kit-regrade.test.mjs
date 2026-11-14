@@ -2,7 +2,7 @@
 // saved record (kit/results/<role>/delta.runs.jsonl) and fixes the decision the grader must make on it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -12,7 +12,14 @@ const require = createRequire(import.meta.url);
 const YAML = require('yaml');
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const spec = (r) => YAML.parse(readFileSync(join(ROOT, 'kit/roles', `${r}.yaml`), 'utf8'));
-const kase = (r, c) => JSON.parse(readFileSync(join(ROOT, 'kit/cases', r, 'evals', c, 'kit-case.json'), 'utf8'));
+// the case as generated now; when a case was renamed later (goal 4 split the escalation scenes into wordings),
+// fall back to what the saved record carries
+const kase = (r, c) => {
+  const p = join(ROOT, 'kit/cases', r, 'evals', c, 'kit-case.json');
+  if (existsSync(p)) return JSON.parse(readFileSync(p, 'utf8'));
+  const x = saved(r, 'with', c) ?? saved(r, 'without', c);
+  return { task: x.task, kind: x.kind ?? (c.includes('-esc-') ? 'escalation' : c.includes('-lure-') ? 'lure' : 'normal'), target: x.target ?? null };
+};
 const saved = (r, arm, c) => readFileSync(join(ROOT, 'kit/results', r, 'delta.runs.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).find((x) => x.arm === arm && x.case === c);
 const gradeSaved = (r, arm, c) => { const x = saved(r, arm, c), k = kase(r, c); return grade(spec(r), { events: x.events, state: x.state, task: k.task, kind: k.kind, target: k.target }); };
 

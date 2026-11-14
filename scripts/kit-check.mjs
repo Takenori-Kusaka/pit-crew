@@ -224,6 +224,37 @@ const P = [
   ] },
 ];
 
+// --- goal 4 (docs/planning/39-dev-kit-cases-v2.md): cases that can tell the conditions apart ---
+const EVAL2 = 'kit/results/dev-eval-2';
+const CARD4 = 'docs/planning/39-dev-kit-cases-v2.md';
+const Q = [
+  { id: 'Q1', due: '2026-11-15', what: 'kit-check --goal 4 と、実行の前の実験カード 39', check: () => {
+    const t = read(CARD4), errs = [];
+    if (!t) return [`${CARD4} がない`];
+    for (const [re, what] of [[/「戻す」/, '「戻す」ができない件'], [/上げる判断/, '上げる判断のケース'], [/誘い/, '誘いのケース'], [/0\.2 以上 0\.8 以下/, '差を出せる基準（0.2〜0.8）'],
+      [/足す・外す/, 'ケースを足す・外す規則'], [/カード 38 §7/, '判定の規則'], [/結果を見てから変えない/, '結果を見てから変えない']])
+      if (!re.test(t)) errs.push(`${CARD4} に「${what}」が無い`);
+    return [...errs, ...committedBefore(CARD4, `${EVAL2}/*.json`)];
+  } },
+  { id: 'Q2', due: '2026-11-16', what: '砂場で「戻す」ができることを、モデルの実行 1 回の記録で示す', check: () =>
+    jsonHas(`${EVAL2}/handback-proof.json`, (j) => j.model_run === true && j.handback_achieved === true && typeof j.how === 'string', `${EVAL2}/handback-proof.json（モデルの実行で「戻す」が通った記録）が無い`) },
+  { id: 'Q3', due: '2026-11-18', what: '作り直したケース、植え込みの検査、試走で差を出せる項目が各部品 3 つ以上', check: () => [
+    ...runTest('packages/pit-wall/test/kit-perturb.test.mjs'),
+    ...jsonHas(`${EVAL2}/pilot.json`, (j) => (j.fixtures ?? []).length >= 2 && j.fixtures.every((f) => (f.informative_items ?? []).length >= 3), `${EVAL2}/pilot.json に、各部品で差を出せる項目が 3 つ以上無い`),
+  ] },
+  { id: 'Q4', due: '2026-11-20', what: '作り直したケースで 4 条件と v1.1、goal 3 と並べて書く', check: () => [
+    ...jsonHas(`${EVAL2}/summary.json`, (j) => ['none', 'default', 'gq-copy', 'v1', 'v1.1'].every((a) => Number.isFinite(j.arms?.[a]?.conformance)), `${EVAL2}/summary.json に 5 条件の準拠が無い`),
+    ...(/dev-eval-2/.test(read('docs/kit-guide.md')) ? [] : ['docs/kit-guide.md に作り直したケースの結果が無い']),
+    ...(/## 結果/.test(read(CARD4)) ? [] : ['カード 39 に「## 結果」が無い']),
+  ] },
+  { id: 'Q5', due: '2026-11-21', what: '主張の台帳の更新、公開の前提、承認依頼', check: () => [
+    ...((read('docs/claims.md').match(/^\| DK-\d+ \|/gm) ?? []).length >= 12 ? [] : ['docs/claims.md に goal 4 の DK 行が足されていない（goal 3 の 7 行に足して 12 行以上）']),
+    ...jsonHas('kit/results/publish-precheck-4.json', (j) => j.ci_green === true && j.secret_hits === 0 && j.identifier_hits === 0 && j.gq_copies_left === 0 && /^[0-9a-f]{40}$/.test(j.snapshot_commit ?? ''), 'kit/results/publish-precheck-4.json が満たされていない'),
+    ...(exists('kit/results/publish-precheck-4.json') ? ciGreenFor(JSON.parse(read('kit/results/publish-precheck-4.json') || '{}').snapshot_commit) : []),
+    ...(exists('kit/results/approval-request-4.md') ? [] : ['kit/results/approval-request-4.md（オーナーへの承認依頼）が無い']),
+  ] },
+];
+
 // `--spec <path>`: validate one role spec (for a new role) and exit
 if (process.argv.includes('--spec')) {
   const p = process.argv[process.argv.indexOf('--spec') + 1];
@@ -234,8 +265,10 @@ if (process.argv.includes('--spec')) {
 const goal2 = process.argv.includes('--goal') && process.argv[process.argv.indexOf('--goal') + 1] === '2';
 const goal3 = process.argv.includes('--goal') && process.argv[process.argv.indexOf('--goal') + 1] === '3';
 if (goal2) M.splice(0, M.length, ...N);
+const goal4 = process.argv.includes('--goal') && process.argv[process.argv.indexOf('--goal') + 1] === '4';
 if (goal3) M.splice(0, M.length, ...P);
-console.log(`kit-check${goal2 ? ' --goal 2' : goal3 ? ' --goal 3' : ''}  今日 ${today} (JST)  期限 2026-11-21`);
+if (goal4) M.splice(0, M.length, ...Q);
+console.log(`kit-check${goal2 ? ' --goal 2' : goal3 ? ' --goal 3' : goal4 ? ' --goal 4' : ''}  今日 ${today} (JST)  期限 2026-11-21`);
 let allPass = true;
 for (const m of M) {
   const errs = m.check();

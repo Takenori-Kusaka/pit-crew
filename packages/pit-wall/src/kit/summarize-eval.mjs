@@ -12,11 +12,31 @@ const PAIRS = [['default', 'none'], ['gq-copy', 'none'], ['v1', 'none'], ['v1', 
 const MARGIN = 0.05;
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
+// --regrade (goal 4): grade every arm again from its saved runs with the current spec, so that all arms are
+// counted the same way (the no-harness pilot was graded before the measure changed). The saved runs are
+// `<arm>-<fixture>-pilot2.runs.jsonl` when present, else `<arm>-<fixture>.runs.jsonl`; costs come from the .json.
+const REGRADE = process.argv.includes('--regrade');
+let grade, spec, YAML;
+if (REGRADE) {
+  ({ grade } = await import('./grader.mjs'));
+  YAML = (await import('node:module')).createRequire(import.meta.url)('yaml');
+  spec = YAML.parse(readFileSync('kit/roles/dev.yaml', 'utf8'));
+}
 const items = (arm, fx) => {
   const p = join(DIR, `${arm}-${fx}.json`);
   if (!existsSync(p)) return null;
   const j = JSON.parse(readFileSync(p, 'utf8'));
-  return j.items.filter((i) => i.arm === (arm === 'none' ? 'without' : 'with'));
+  const saved = j.items.filter((i) => i.arm === (arm === 'none' ? 'without' : 'with'));
+  if (!REGRADE) return saved;
+  const rp = [join(DIR, `${arm}-${fx}-pilot2.runs.jsonl`), join(DIR, `${arm}-${fx}.runs.jsonl`)].find(existsSync);
+  const runs = readFileSync(rp, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const cost = Object.fromEntries(saved.map((i) => [i.case, i.costUsd]));
+  return runs.map((r) => {
+    const kc = JSON.parse(readFileSync(join('kit/cases', fx, 'evals', r.case, 'kit-case.json'), 'utf8'));
+    const g = grade(spec, { events: r.events, state: r.state, task: kc.task, kind: kc.kind, target: kc.target, final: r.final });
+    return { case: r.case, kind: kc.kind, conformance: g.conformance, violations: g.violations, error: null, costUsd: cost[r.case] ?? 0,
+      forbidden: Object.entries(g.forbidden).filter(([, v]) => v).map(([k]) => k), missing: Object.entries(g.required).filter(([, v]) => !v).map(([k]) => k) };
+  });
 };
 
 const arms = {};
