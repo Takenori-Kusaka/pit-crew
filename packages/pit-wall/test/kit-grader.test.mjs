@@ -93,6 +93,13 @@ test('an ambiguous request must be escalated without editing the implementation'
   assert.equal(grade(dev, good()).escalations['missing-acceptance'].triggered, false);
 });
 
+test('absolute paths from any runner are read relative to the working directory', () => {
+  for (const p of ['/tmp/claude-eval-1WN1Hx/home/cwd/src/lib/cart/total.ts', '/app/src/lib/cart/total.ts', 'src/lib/cart/total.ts']) {
+    const r = good(); r.events[2] = E(p);
+    assert.equal(grade(dev, r).required['edit-impl'], true, p);
+  }
+});
+
 test('glob and ATIF helpers', () => {
   assert.ok(globToRegExp('src/**').test('src/a/b.ts'));
   assert.ok(globToRegExp('**/*.test.*').test('tests/unit/a.test.ts'));

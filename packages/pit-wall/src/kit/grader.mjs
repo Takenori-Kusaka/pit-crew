@@ -22,7 +22,9 @@ export function globToRegExp(glob) {
   return new RegExp(`^${re}$`);
 }
 const arr = (x) => (x === undefined || x === null ? [] : Array.isArray(x) ? x : [x]);
-const norm = (p) => String(p ?? '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/(?:app|workspace)\//, '');
+// Paths are compared relative to the task's working directory. Runners put it in different places
+// (Harbor /app, plugin eval /tmp/claude-eval-*/home/cwd, a workspace mount), so strip any of those.
+const norm = (p) => String(p ?? '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/^.*?\/(?:home\/cwd|app|workspace|work)\//, '');
 
 function subst(value, task) {
   if (Array.isArray(value)) return value.flatMap((v) => arr(subst(v, task)));

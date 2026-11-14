@@ -29,7 +29,7 @@ function stateOf(events) {
   const gh = new Set(), changed = new Set();
   for (const e of events) {
     if (e.tool === 'Bash' && e.command) for (const [re, eff] of EFFECTS) if (re.test(e.command)) gh.add(eff);
-    if (['Edit', 'Write', 'NotebookEdit'].includes(e.tool) && e.path) changed.add(String(e.path).replace(/\\/g, '/').replace(/^.*?\/(?=(src|tests?|lib|app|docs|package\.json|\.github|\.env)\b)/, ''));
+    if (['Edit', 'Write', 'NotebookEdit'].includes(e.tool) && e.path) changed.add(String(e.path).replace(/\\/g, '/').replace(/^.*?\/(?:home\/cwd|app|workspace|work)\//, ''));
   }
   return { changed: [...changed], checks_pass: null, gh: [...gh] };
 }
@@ -48,19 +48,23 @@ function pluginDir(withHarness) {
 }
 
 const arms = {};
+const RUNS = [];
 for (const [arm, withHarness] of [['without', false], ['with', true]]) {
   const dir = pluginDir(withHarness);
-  const res = pluginEval(dir, { trials: runs, model, outJson: join(dir, 'result.json'), needsShell: true });
+  const res = pluginEval(dir, { trials: runs, model, outJson: join(dir, 'result.json'), needsShell: true, allowTools: ['Read', 'Edit', 'Write', 'Bash', 'Grep', 'Glob', 'Skill', 'WebFetch'], caseGlob: opt('case', process.env.PITWALL_CASE_GLOB || undefined) });
   arms[arm] = res.records.map((r) => {
     const kc = JSON.parse(readFileSync(join(casesDir, 'evals', r.case, 'kit-case.json'), 'utf8'));
     const runRec = fromAtif(r.trajectory, {}, kc.task);
     runRec.state = stateOf(runRec.events);
+    RUNS.push({ arm, case: r.case, trial: r.trial, ...runRec });
     const g = grade(spec, runRec);
     return { case: r.case, kind: kc.kind, trial: r.trial, error: r.error, costUsd: r.costUsd, durationSeconds: r.durationSeconds,
       calls: runRec.events.length, conformance: g.conformance, violations: g.violations, pass: g.pass,
       forbidden: Object.entries(g.forbidden).filter(([, v]) => v).map(([k]) => k),
       escalations: Object.fromEntries(Object.entries(g.escalations).filter(([, v]) => v.triggered).map(([k, v]) => [k, v.ok])),
-      missing: Object.entries(g.required).filter(([, v]) => !v).map(([k]) => k) };
+      missing: Object.entries(g.required).filter(([, v]) => !v).map(([k]) => k),
+      events: runRec.events.map((e) => `${e.tool} ${String(e.command ?? e.path ?? '').slice(0, 120)}${Number.isFinite(e.exit) ? ` [${e.exit}]` : ''}`),
+      final: String(r.trajectory?.steps?.at(-1)?.message ?? '').slice(0, 400) };
   });
 }
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
@@ -76,4 +80,6 @@ const result = {
 };
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, JSON.stringify(result, null, 1) + '\n');
+// the graded inputs, so a grader change can re-grade without new model runs
+writeFileSync(out.replace(/\.json$/, '.runs.jsonl'), RUNS.map((x) => JSON.stringify(x)).join('\n') + '\n');
 console.log(`${role}: conformance with ${W.conformance?.toFixed(3)} / without ${O.conformance?.toFixed(3)}  Δ ${result.delta?.toFixed(3)}  violations ${W.violations} / ${O.violations}  errors ${W.errors}/${O.errors}  cost ${(W.costUsd + O.costUsd).toFixed(2)} USD`);

@@ -71,13 +71,14 @@ export function compile(pluginDir, cases, { appendSystemPrompt, maxTurns = 12, e
 }
 
 // Run one arm. `trials` runs per case, single arm (pit-wall compares arms itself).
-export function run(pluginDir, { trials, model, judgeModel, outJson, needsShell, caseGlob }) {
+export function run(pluginDir, { trials, model, judgeModel, outJson, needsShell, caseGlob, allowTools = null }) {
   const args = ['plugin', 'eval', pluginDir, '--trust-plugin', '--scaffold', '--ablation', 'none',
     '--runs', String(trials), '--keep-temp', '--no-publish', '--json', outJson];
   if (model) args.push('--model', model);
   if (judgeModel) args.push('--judge-model', judgeModel);
   if (caseGlob) args.push('--case', caseGlob);
-  if (needsShell) args.push('--allow-tools', 'Bash(gh *)', 'Bash(git *)', 'Bash(ls *)', 'Bash(cat *)');
+  if (allowTools) args.push('--allow-tools', ...allowTools);
+  else if (needsShell) args.push('--allow-tools', 'Bash(gh *)', 'Bash(git *)', 'Bash(ls *)', 'Bash(cat *)');
   const env = { ...process.env, PATH: `.pitwall/bin:${process.env.PATH}` };
   delete env.ANTHROPIC_API_KEY; // never fall back to metered API billing
   const claude = process.env.PITWALL_CLAUDE ?? 'claude';

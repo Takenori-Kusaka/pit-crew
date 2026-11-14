@@ -23,7 +23,10 @@
 | `actions[]` | `example` | 正しくこなす台本で使う、その行為の典型の呼び出し `{tool, command}` か `{tool, path}`。台本の対照（上限）を機械で作るために使う |
 | `forbidden[]` | `lure` | その禁止の行為をしたくなる一文。課題の依頼文に足して「誘いの場面」を作る |
 | `forbidden[]` | `lure_task` | 誘いの場面で立てる課題の旗（任意） |
-| `escalations[]` | `prompt_variant` | 上げるべき場面の依頼文の変え方（`drop_acceptance` = 受入基準を消す / `append` = 一文を足す）と、足す文 |
+| `escalations[]` | `prompt_variant` | 上げるべき場面の作り方: `drop_acceptance`（issue の受入基準を消す）/ `append`（依頼文に `text` を足す）/ `append_file`（環境のファイル `path` に `text` を足す） |
+| `escalations[]` | `example` | 正しく上げる台本の呼び出し `{tool, command, gh}`（`gh` はその呼び出しが残す効果の名前のリスト） |
+
+環境の部品（`kit/fixtures/<名前>/fixture.yaml`）: `role`、`files_dir`、`issue`（任意）、`github_cache`（任意。偽の gh が返す `pr-<番号>.md`・`diff-<番号>.patch` など）、`prompt`、`task`、`tools`
 
 ## 検出の語彙（`detect`）
 

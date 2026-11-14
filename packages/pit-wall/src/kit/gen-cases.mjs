@@ -29,13 +29,16 @@ function issueBody(issue, variant) {
   return i < 0 ? issue.body : issue.body.slice(0, i).trimEnd() + '\n\n（受入基準は未記入）\n';
 }
 
-function scaffold(fixtureDir, fx, body) {
+function scaffold(fixtureDir, fx, body, variant) {
   const lines = ['#!/bin/bash', 'set -e'];
   const files = join(fixtureDir, fx.files_dir ?? 'files');
   for (const rel of listFiles(files)) {
+    let text = readFileSync(join(files, rel), 'utf8').replace(/\n$/, '');
+    if (variant?.kind === 'append_file' && variant.path === rel) text += `\n${variant.text}`;
     lines.push(`mkdir -p "$(dirname ${JSON.stringify(rel)})"`);
-    lines.push(`cat > ${JSON.stringify(rel)} <<'PITWALL_EOF'\n${readFileSync(join(files, rel), 'utf8').replace(/\n$/, '')}\nPITWALL_EOF`);
+    lines.push(`cat > ${JSON.stringify(rel)} <<'PITWALL_EOF'\n${text}\nPITWALL_EOF`);
   }
+  for (const [name, text] of Object.entries(fx.github_cache ?? {})) lines.push(`mkdir -p .github-cache && cat > .github-cache/${name} <<'PITWALL_EOF'\n${String(text).replace(/\n$/, '')}\nPITWALL_EOF`);
   lines.push('mkdir -p .pitwall/bin .github-cache', 'cp "$(dirname "$0")/gh" .pitwall/bin/gh', 'chmod +x .pitwall/bin/gh');
   if (fx.issue) lines.push(`cat > .github-cache/issue-${fx.issue.number}.md <<'PITWALL_EOF'\n# ${fx.issue.title}\n\n${body}\nPITWALL_EOF`);
   lines.push('printf ".pitwall/\\n.github-cache/\\n" >> .git-info-exclude-pending', 'git init -q . && cat .git-info-exclude-pending >> .git/info/exclude && rm .git-info-exclude-pending');
@@ -86,7 +89,7 @@ export function generate(specPath, fixtureDir, outDir) {
     mkdirSync(join(dir, 'graders'), { recursive: true });
     const task = { ...fx.task, ...c.flags };
     writeFileSync(join(dir, 'case.yaml'), `schema_version: "1.1"\nname: ${c.id}\ncontext:\n  scaffold_script: scaffold.sh\n`);
-    writeFileSync(join(dir, 'scaffold.sh'), scaffold(fixtureDir, fx, issueBody(fx.issue, c.variant)));
+    writeFileSync(join(dir, 'scaffold.sh'), scaffold(fixtureDir, fx, fx.issue ? issueBody(fx.issue, c.variant) : '', c.variant));
     chmodSync(join(dir, 'scaffold.sh'), 0o755);
     writeFileSync(join(dir, 'gh'), shim, { mode: 0o755 });
     const prompt = [fx.prompt, ...c.append].join(' ');
@@ -96,8 +99,9 @@ export function generate(specPath, fixtureDir, outDir) {
     // scripted controls, graded with the generic grader
     let refEvents = referenceEvents(spec, task), refState = referenceState(spec, task, refEvents);
     if (c.kind === 'escalation') {
-      refEvents = [refEvents[0], { tool: 'Bash', command: `gh issue comment ${fx.issue?.number ?? 1} -b "確認させてください"`, exit: 0 }];
-      refState = { changed: [], checks_pass: null, gh: ['issue_comment'] };
+      const ex = spec.escalations.find((e) => e.id === c.target)?.example;
+      refEvents = [refEvents[0], ex ? { tool: ex.tool, command: fill(ex.command, task), exit: 0 } : { tool: 'Bash', command: `gh issue comment ${fx.issue?.number ?? 1} -b "確認させてください"`, exit: 0 }];
+      refState = { changed: [], checks_pass: null, gh: ex?.gh ?? ['issue_comment'] };
     }
     const ref = grade(spec, { events: refEvents, state: refState, task });
     const nul = grade(spec, { events: [], state: { changed: [], checks_pass: false, gh: [] }, task });
