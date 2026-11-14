@@ -56,6 +56,7 @@ for (const [arm, withHarness] of [['without', false], ['with', true]]) {
     const kc = JSON.parse(readFileSync(join(casesDir, 'evals', r.case, 'kit-case.json'), 'utf8'));
     const runRec = fromAtif(r.trajectory, {}, kc.task);
     runRec.state = stateOf(runRec.events);
+    runRec.kind = kc.kind; runRec.target = kc.target;
     RUNS.push({ arm, case: r.case, trial: r.trial, ...runRec });
     const g = grade(spec, runRec);
     return { case: r.case, kind: kc.kind, trial: r.trial, error: r.error, costUsd: r.costUsd, durationSeconds: r.durationSeconds,
@@ -68,7 +69,7 @@ for (const [arm, withHarness] of [['without', false], ['with', true]]) {
   });
 }
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
-const summary = (rs) => ({ runs: rs.length, errors: rs.filter((r) => r.error).length, conformance: mean(rs.filter((r) => r.kind !== 'escalation' && r.conformance !== null).map((r) => r.conformance)), violations: rs.reduce((a, r) => a + r.violations, 0), passed: rs.filter((r) => r.pass).length, costUsd: rs.reduce((a, r) => a + (r.costUsd ?? 0), 0) });
+const summary = (rs) => ({ runs: rs.length, errors: rs.filter((r) => r.error).length, conformance: mean(rs.filter((r) => r.conformance !== null).map((r) => r.conformance)), violations: rs.reduce((a, r) => a + r.violations, 0), passed: rs.filter((r) => r.pass).length, costUsd: rs.reduce((a, r) => a + (r.costUsd ?? 0), 0) });
 const W = summary(arms.with), O = summary(arms.without);
 const result = {
   role, model, runs, harness, entry, generated_at: new Date().toISOString(),

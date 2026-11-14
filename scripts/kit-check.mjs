@@ -108,7 +108,86 @@ const M = [
   ] },
 ];
 
-console.log(`kit-check  今日 ${today} (JST)  期限 2026-11-21`);
+// --- goal 2 (docs/planning/37-goal-2-2026-11-14.md): two cold onboardings, grader miscounts, planted errors ---
+const ROLES6 = ['dev', 'po', 'qm', 'platform', 'audit', 'fix'];
+// an onboarding log states its blocker counts on two lines that the check can read:
+//   詰まった所: N 件            (all blockers)
+//   詰まった所（案内の不足）: N 件  (blockers caused by the guide / templates / schema)
+const blockerCount = (p, kind) => {
+  const m = read(p).match(kind === 'guide' ? /詰まった所（案内の不足）\s*[:：]\s*(\d+)\s*件/ : /詰まった所\s*[:：]\s*(\d+)\s*件/);
+  return m ? Number(m[1]) : null;
+};
+const onboarding = (role) => {
+  const p = `kit/results/${role}/onboarding-log.md`;
+  if (!exists(p)) return [`${p} がない`];
+  const errs = [];
+  if ((read(p).match(/\b\d{1,2}:\d{2}\b/g) ?? []).length < 2) errs.push(`${p} に手順ごとの時刻が無い`);
+  if (blockerCount(p) === null) errs.push(`${p} に「詰まった所: N 件」の行が無い`);
+  if (blockerCount(p, 'guide') === null) errs.push(`${p} に「詰まった所（案内の不足）: N 件」の行が無い`);
+  return errs;
+};
+const resolutionRows = (p) => (read(p).match(/^\|\s*B\d+\s*\|/gm) ?? []).length;
+const ciGreenFor = (sha) => {
+  const r = spawnSync('gh', ['run', 'list', '--workflow', 'kit.yml', '-L', '5', '--json', 'conclusion,headSha'], { encoding: 'utf8' });
+  if (r.status !== 0) return ['GitHub Actions の結果を取得できない'];
+  try { return JSON.parse(r.stdout).some((x) => x.headSha === sha && x.conclusion === 'success') ? [] : [`スナップショット ${String(sha).slice(0, 9)} の kit.yml が緑でない`]; } catch { return ['gh の出力を読めない']; }
+};
+// CI is green on a commit that contains `file` (the latest successful kit.yml run must include the check)
+const ciGreenWith = (file) => {
+  const r = spawnSync('gh', ['run', 'list', '--workflow', 'kit.yml', '-L', '5', '--json', 'conclusion,headSha'], { encoding: 'utf8' });
+  if (r.status !== 0) return ['GitHub Actions の結果を取得できない'];
+  let runs; try { runs = JSON.parse(r.stdout); } catch { return ['gh の出力を読めない']; }
+  const ok = runs.find((x) => x.conclusion === 'success');
+  if (!ok) return ['kit.yml の緑の実行が無い'];
+  spawnSync('git', ['fetch', '-q', 'origin', ok.headSha], { encoding: 'utf8' });
+  const has = spawnSync('git', ['cat-file', '-e', `${ok.headSha}:${file}`]).status === 0;
+  return has ? [] : [`緑の kit.yml の実行（${ok.headSha.slice(0, 9)}）に ${file} が入っていない（CI 用のスナップショットを push する）`];
+};
+const N = [
+  { id: 'N1', due: '2026-11-15', what: 'kit-check --goal 2 と、1 回目の導入（ext-audit）の記録', check: () => [
+    ...validateSpec('kit/roles/ext-audit.yaml'), ...casesFor('ext-audit'), ...onboarding('ext-audit'),
+  ] },
+  { id: 'N2', due: '2026-11-17', what: '1 回目の詰まりへの対応、2 回目の導入（planning）、両ロールの Δ', check: () => {
+    const errs = [];
+    const res = 'kit/results/ext-audit/blockers-resolution.md', n1 = blockerCount('kit/results/ext-audit/onboarding-log.md');
+    if (!exists(res)) errs.push(`${res}（詰まった所ごとの対応）がない`);
+    else if (n1 !== null && resolutionRows(res) < n1) errs.push(`${res} の対応が ${resolutionRows(res)} 件で、詰まった所 ${n1} 件に足りない`);
+    errs.push(...validateSpec('kit/roles/planning.yaml'), ...casesFor('planning'), ...onboarding('planning'));
+    errs.push(...jsonHas('kit/results/planning/time.json', (j) => j.design_hours <= 4 && j.test_hours <= 4, 'kit/results/planning/time.json が無いか、設計・テストのどちらかが 4 時間を超えた'));
+    const g1 = blockerCount('kit/results/ext-audit/onboarding-log.md', 'guide'), g2 = blockerCount('kit/results/planning/onboarding-log.md', 'guide');
+    if (g1 !== null && g2 !== null && !(g2 < g1)) errs.push(`案内の不足による詰まりが減っていない（1 回目 ${g1} 件、2 回目 ${g2} 件）`);
+    errs.push(...deltaFor('ext-audit'), ...deltaFor('planning'));
+    return errs;
+  } },
+  { id: 'N3', due: '2026-11-18', what: '上げる判断の採点、数え誤りの回帰テストと修正、6 ロールの採点し直し', check: () => [
+    ...runTest('packages/pit-wall/test/kit-regrade.test.mjs'),
+    ...jsonHas('kit/results/regrade.json', (j) => ROLES6.every((r) => j.roles?.[r] && Number.isFinite(j.roles[r].before?.with) && Number.isFinite(j.roles[r].after?.with)), 'kit/results/regrade.json に 6 ロールの直す前・後が無い'),
+    ...(/採点し直し/.test(read('docs/kit-guide.md')) ? [] : ['docs/kit-guide.md に「採点し直し」の前後の表が無い']),
+  ] },
+  { id: 'N4', due: '2026-11-20', what: '植え込んだ誤りを採点器がすべて検出し、元の台本は pass。CI に入って緑', check: () => [
+    ...(exists('packages/pit-wall/src/kit/perturb.mjs') ? [] : ['packages/pit-wall/src/kit/perturb.mjs がない']),
+    ...runTest('packages/pit-wall/test/kit-perturb.test.mjs'),
+    ...(/kit-perturb\.test\.mjs/.test(read('.github/workflows/kit.yml')) ? [] : ['.github/workflows/kit.yml が摂動の自己テストを回していない']),
+    ...ciGreenWith('packages/pit-wall/test/kit-perturb.test.mjs'),
+  ] },
+  { id: 'N5', due: '2026-11-21', what: 'kit-guide を 2 回の導入で更新、公開の前提、承認依頼', check: () => [
+    ...(/ext-audit/.test(read('docs/kit-guide.md')) && /planning/.test(read('docs/kit-guide.md')) ? [] : ['docs/kit-guide.md に 2 回の導入（ext-audit・planning）の結果が無い']),
+    ...jsonHas('kit/results/publish-precheck-2.json', (j) => j.ci_green === true && j.secret_hits === 0 && j.identifier_hits === 0 && /^[0-9a-f]{40}$/.test(j.snapshot_commit ?? ''), 'kit/results/publish-precheck-2.json が満たされていない'),
+    ...(exists('kit/results/publish-precheck-2.json') ? ciGreenFor(JSON.parse(read('kit/results/publish-precheck-2.json') || '{}').snapshot_commit) : []),
+    ...(exists('kit/results/approval-request-2.md') ? [] : ['kit/results/approval-request-2.md（オーナーへの承認依頼）が無い']),
+  ] },
+];
+
+// `--spec <path>`: validate one role spec (for a new role) and exit
+if (process.argv.includes('--spec')) {
+  const p = process.argv[process.argv.indexOf('--spec') + 1];
+  const errs = validateSpec(p);
+  console.log(errs.length ? errs.map((e) => `- ${e}`).join('\n') : `${p}: ok`);
+  process.exit(errs.length ? 1 : 0);
+}
+const goal2 = process.argv.includes('--goal') && process.argv[process.argv.indexOf('--goal') + 1] === '2';
+if (goal2) M.splice(0, M.length, ...N);
+console.log(`kit-check${goal2 ? ' --goal 2' : ''}  今日 ${today} (JST)  期限 2026-11-21`);
 let allPass = true;
 for (const m of M) {
   const errs = m.check();

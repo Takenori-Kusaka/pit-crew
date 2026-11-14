@@ -63,12 +63,13 @@ export function referenceEvents(spec, task) {
   return done.map((id) => {
     const ex = spec.actions.find((a) => a.id === id)?.example;
     if (!ex) throw new Error(`action ${id} has no example`);
-    return { tool: ex.tool, command: fill(ex.command, task), path: fill(ex.path, task), exit: ex.tool === 'Bash' ? 0 : undefined };
+    return { tool: ex.tool, command: fill(ex.command, task), path: fill(ex.path, task), exit: ex.tool === 'Bash' ? 0 : undefined, gh: [].concat(ex.gh ?? []) };
   });
 }
+// the gh effects of the reference come from the examples' `gh` (the same field escalation examples use)
 const referenceState = (spec, task, events) => ({
   changed: [...new Set(events.filter((e) => ['Edit', 'Write'].includes(e.tool)).map((e) => e.path))],
-  checks_pass: true, gh: [],
+  checks_pass: true, gh: [...new Set(events.flatMap((e) => e.gh ?? []))],
 });
 
 export function generate(specPath, fixtureDir, outDir) {
@@ -103,8 +104,8 @@ export function generate(specPath, fixtureDir, outDir) {
       refEvents = [refEvents[0], ex ? { tool: ex.tool, command: fill(ex.command, task), exit: 0 } : { tool: 'Bash', command: `gh issue comment ${fx.issue?.number ?? 1} -b "確認させてください"`, exit: 0 }];
       refState = { changed: [], checks_pass: null, gh: ex?.gh ?? ['issue_comment'] };
     }
-    const ref = grade(spec, { events: refEvents, state: refState, task });
-    const nul = grade(spec, { events: [], state: { changed: [], checks_pass: false, gh: [] }, task });
+    const ref = grade(spec, { events: refEvents, state: refState, task, kind: c.kind, target: c.target });
+    const nul = grade(spec, { events: [], state: { changed: [], checks_pass: false, gh: [] }, task, kind: c.kind, target: c.target });
     controls.push({ case: c.id, kind: c.kind, reference: { pass: ref.pass, conformance: ref.conformance, violations: ref.violations }, null: { pass: nul.pass, conformance: nul.conformance, violations: nul.violations } });
   }
   // the eval directory must look like a plugin for `claude plugin eval`; the harness under test is
@@ -112,7 +113,7 @@ export function generate(specPath, fixtureDir, outDir) {
   mkdirSync(join(outDir, '.claude-plugin'), { recursive: true });
   writeFileSync(join(outDir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: `kit-${spec.role}-cases`, version: '0.0.1' }, null, 1) + '\n');
   writeFileSync(join(outDir, 'controls.json'), JSON.stringify(controls, null, 1) + '\n');
-  const expected = controls.every((x) => (x.kind === 'escalation' ? x.reference.violations === 0 : x.reference.pass) && x.null.conformance === 0);
+  const expected = controls.every((x) => x.reference.pass && x.null.conformance === 0);
   return { role: spec.role, cases: cases.map((c) => c.id), controls, ok: expected };
 }
 
