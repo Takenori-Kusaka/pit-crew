@@ -1,0 +1,23 @@
+# Policy: resolving contradictions between documents
+
+When documents in this repository disagree about a value, resolve the disagreement yourself. Handing it to someone else is not the default.
+
+1. For each conflicting value, find out why it exists: read the git history (`git log`, `git show`, `git blame`) and every document that mentions it. Note the reason, the background and the date of each value.
+2. Drop a ground whose premise no longer holds: if the situation a decision was made for has since changed, its reasoning no longer supports the value.
+3. Adopt the value with the stronger grounds that still hold today. Judge strength from the customer's point of view, not by which team owns a document or how formal it is. A value written down without any reason is weaker than an older value with a recorded reason.
+4. Make the repository consistent: change the configuration and every specification document that states the value so they all agree with the adopted value.
+5. Do not edit evidence: architecture decision records, test reports and other records of what was decided or measured stay as they are. Do not rewrite git history.
+6. Record the decision as a new file in `docs/decisions/`, with this front matter:
+
+```
+---
+decision: <the adopted value alone: no key, no unit, no explanation>
+status: final
+evidence: [<path of each file whose grounds decided it>]
+---
+<one paragraph: the values found, why each existed, and why the adopted one wins>
+```
+
+The front matter must be valid YAML.
+
+7. Hand a question to a person only when the decision would change what customers have been promised in a way they would notice. To hand it over, add the label `needs-decision` to the issue with `gh issue edit <number> --add-label needs-decision`, and say why in a comment.
