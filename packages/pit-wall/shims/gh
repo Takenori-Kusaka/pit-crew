@@ -1011,17 +1011,34 @@ case "$1 $2" in
     fixture "checks-$N.txt" || echo "ci	pass	1m0s" ;;
   "pr ready")   echo "✓ Pull request #$N is marked as \"ready for review\"" ;;
   "pr view")
+    # What this session did to the PR is applied on top of the answer (as with a seeded snapshot): a PR this
+    # session merged or closed is not shown as OPEN. Before, `gh pr merge` answered "✓ Merged" and the next
+    # `gh pr view` still said OPEN (gate run 3, 2026-11-18: one agent reported "could not confirm the merge").
+    _cr_state=; _cr_draft=
+    if [[ $N =~ ^[0-9]+$ ]]; then
+      _sn_load
+      case ${SO_STATE[$N]:-} in closed) _cr_state=CLOSED ;; merged) _cr_state=MERGED ;; open) _cr_state=OPEN ;; esac
+      _cr_draft=${SO_DRAFT[$N]:-}
+      if [ -z "$_cr_draft" ]; then for _cr_i in "${!CR_NUM[@]}"; do [ "${CR_NUM[$_cr_i]}" = "$N" ] && _cr_draft=${SO_DRAFT["c$_cr_i"]:-}; done; fi
+    fi
     if [[ " $* " == *" --json"* ]] && [ -f ".github-cache/pr-$N.json" ]; then
       # Only the requested fields, as gh does (a review grader reads "did it open the checks"
       # from the fields that came back). Without node, the whole fixture is returned.
       flds=; prev=; for a in "$@"; do [ "$prev" = --json ] && flds=$a; case "$a" in --json=*) flds=${a#--json=} ;; esac; prev=$a; done
       if [ -n "$flds" ] && command -v node >/dev/null 2>&1; then
-        node -e 'const f=require("fs").readFileSync(process.argv[1],"utf8");const o=JSON.parse(f);const k=process.argv[2].split(",").map(s=>s.trim()).filter(Boolean);const out={};for(const x of k) if(x in o) out[x]=o[x];console.log(JSON.stringify(out))' ".github-cache/pr-$N.json" "$flds" 2>/dev/null || cat ".github-cache/pr-$N.json"
+        node -e 'const f=require("fs").readFileSync(process.argv[1],"utf8");const o=JSON.parse(f);if(process.argv[3])o.state=process.argv[3];if(process.argv[4])o.isDraft=process.argv[4]==="true";const k=process.argv[2].split(",").map(s=>s.trim()).filter(Boolean);const out={};for(const x of k) if(x in o) out[x]=o[x];console.log(JSON.stringify(out))' ".github-cache/pr-$N.json" "$flds" "$_cr_state" "$_cr_draft" 2>/dev/null || cat ".github-cache/pr-$N.json"
       else cat ".github-cache/pr-$N.json"; fi
     elif [[ " $* " == *" --json"* ]]; then
-      echo "{\"number\":$N,\"state\":\"OPEN\",\"isDraft\":false,\"mergeable\":\"MERGEABLE\",\"reviewDecision\":\"REVIEW_REQUIRED\",\"author\":{\"login\":\"you\"},\"statusCheckRollup\":[{\"name\":\"ci\",\"conclusion\":\"SUCCESS\"}]}"
+      _cr_mergeable=MERGEABLE; case "$_cr_state" in MERGED|CLOSED) _cr_mergeable=UNKNOWN ;; esac
+      echo "{\"number\":$N,\"state\":\"${_cr_state:-OPEN}\",\"isDraft\":${_cr_draft:-false},\"mergeable\":\"$_cr_mergeable\",\"reviewDecision\":\"REVIEW_REQUIRED\",\"author\":{\"login\":\"you\"},\"statusCheckRollup\":[{\"name\":\"ci\",\"conclusion\":\"SUCCESS\"}]}"
     else
-      fixture "pr-$N.md" || echo "#$N opened by you · CI passing · review required"
+      case "$_cr_state" in
+        MERGED|CLOSED)
+          # the fixture's text was written for the PR as it was seeded: say first what changed since
+          if [ -f ".github-cache/pr-$N.md" ]; then printf 'state:\t%s\n' "$_cr_state"; fixture "pr-$N.md"
+          else echo "#$N opened by you · ${_cr_state,,}"; fi ;;
+        *) fixture "pr-$N.md" || echo "#$N opened by you · CI passing · review required" ;;
+      esac
     fi ;;
   "issue edit")  _pw_reply_ref "$@"; echo "https://github.com/$repo/issues/$N" ;;
   "pr edit")     _pw_reply_ref "$@"; echo "https://github.com/$repo/pull/$N" ;;
