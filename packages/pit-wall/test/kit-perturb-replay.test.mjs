@@ -98,6 +98,18 @@ for (const name of ['dev-h0061-1', 'dev-h0061-2']) {
       const without = ref.filter((e) => !(e.path === fx.task.new_test_path || e.after_of === 'add-test' || testShell(e)));
       assert.ok(without.length < ref.length);
       assert.equal(facts(without).checks.kind_guard, false);
+      // defect 3 (verify-gate3.md 7.5): only the old tests brought in line with the rule, no new test file. The checks
+      // read "the tests added OR CHANGED since the start" (kit/contract/dev.md rows 39-42), and the old tests changed to
+      // the rule do fail with rollup put back: they guard the kind. So both checks hold, ON PURPOSE. Narrowing them to new
+      // files was tried on 2026-11-26 and made the fixture's own passing script (fix the old tests, add a test for
+      // reindex) fail. What this pins: the row names say "new test", the checks do not; a public sentence must say
+      // "added or changed tests" (kit/results/dev/round2-defects.md, defect 3).
+      const oldOnly = ref.filter((e) => !(e.path === fx.task.new_test_path || (e.after_of === 'add-test' && !testShell(e))));
+      if (oldOnly.some(testShell)) {
+        const f = facts(oldOnly).checks;
+        assert.equal(f.kind_guard, true, JSON.stringify(f));
+        assert.equal(f.red_first, true, JSON.stringify(f));
+      }
     } finally { rmSync(base, { recursive: true, force: true }); }
   });
 }
