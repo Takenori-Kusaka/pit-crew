@@ -46,7 +46,10 @@ export function stripComments(text, path = '') {
 const DECL = /\b(x)?(?:it|test|specify)((?:\.\w+)*)(?:\s*\((?:[^()]|\([^()]*\))*\))?\s*\(\s*(['"`])((?:\\.|(?!\3)[\s\S])*?)\3|\bdef\s+(test_\w+)\s*\(|\bfunc\s+(Test\w+)\s*\(/g;
 const ASSERT = /\b(?:expect|assert\w*)\b/g;
 const SKIP_MOD = /\.(?:skip|todo|only|fails|skipIf|runIf)\b/;
-const MARKER = /\.(?:skip|todo|only|fails|skipIf|runIf)\b|\bx(?:it|test|describe)\s*\(|@(?:pytest\.mark\.(?:skip|skipif|xfail)|unittest\.(?:skip\w*|expectedFailure))\b|\bt\.Skip\w*\(|\bctx\.skip\s*\(/g;
+// node:test's own forms: an options object after the title (`test('t', { skip: true }, fn)`, todo / only too), and
+// `t.skip()` / `t.todo()` on the test context (Dev round 2, scenes g0006-1 / g0006-2: the options form was not read)
+const OPT_SKIP = /^\s*,\s*\{[^{}]*\b(?:skip|todo|only)\s*:(?!\s*false\b)/;
+const MARKER = /\.(?:skip|todo|only|fails|skipIf|runIf)\b|,\s*\{[^{}]*\b(?:skip|todo|only)\s*:(?!\s*false\b)|\bt\.(?:skip|todo)\s*\(|\bx(?:it|test|describe)\s*\(|@(?:pytest\.mark\.(?:skip|skipif|xfail)|unittest\.(?:skip\w*|expectedFailure))\b|\bt\.Skip\w*\(|\bctx\.skip\s*\(/g;
 
 // What a test file declares, read from its text with comments removed (a commented-out test is not a test):
 //   tests   [{ title, asserts, skipped }]  each `it` / `test` / `def test_` / `func Test`, the assertion calls up
@@ -55,7 +58,7 @@ const MARKER = /\.(?:skip|todo|only|fails|skipIf|runIf)\b|\bx(?:it|test|describe
 export function testFacts(text, path = '') {
   const s = stripComments(text, path);
   const decls = [];
-  for (const m of s.matchAll(DECL)) decls.push({ at: m.index, end: m.index + m[0].length, title: m[4] ?? m[5] ?? m[6], skipped: !!m[1] || SKIP_MOD.test(m[2] ?? '') });
+  for (const m of s.matchAll(DECL)) decls.push({ at: m.index, end: m.index + m[0].length, title: m[4] ?? m[5] ?? m[6], skipped: !!m[1] || SKIP_MOD.test(m[2] ?? '') || (!m[5] && !m[6] && OPT_SKIP.test(s.slice(m.index + m[0].length, m.index + m[0].length + 400))) });
   const tests = decls.map((d, k) => ({ title: d.title, skipped: d.skipped, asserts: (s.slice(d.end, decls[k + 1]?.at ?? s.length).match(ASSERT) ?? []).length }));
   return { tests, markers: (s.match(MARKER) ?? []).length };
 }

@@ -406,3 +406,19 @@ test('negative controls: one known false positive (an older row), and undecidabl
   const w3 = new Set(dev.harms.map((h) => h.id));
   for (const c of mc.controls) for (const m of ['A', 'B']) assert.deepEqual(c[m].by.filter((x) => w3.has(x)), [], `${c.plant} ${m}`);
 });
+
+// node:test's own skip forms (Dev round 2, scenes g0006-1 / g0006-2): the options object after the title and t.skip() /
+// t.todo() on the context. `{ skip: false }` and other options are not a skip.
+test('testFacts: node:test options { skip / todo / only } and t.skip() count as skip marks; { skip: false } does not', () => {
+  const src = [
+    "test('a', () => { assert.ok(1); });",
+    "test('b', { skip: 'later' }, () => { assert.ok(1); });",
+    "test('c', { skip: false }, () => {});",
+    "test('d', (t) => { t.skip('x'); });",
+    "it('e', { timeout: 5 }, () => {});",
+    "test('f', {todo:true}, () => {});",
+  ].join('\n');
+  const f = testFacts(src, 'tests/x.test.js');
+  assert.deepEqual(f.tests.map((t) => [t.title, t.skipped]), [['a', false], ['b', true], ['c', false], ['d', false], ['e', false], ['f', true]]);
+  assert.equal(f.markers, 3);
+});

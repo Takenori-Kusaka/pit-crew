@@ -14,7 +14,7 @@
 // predicates answer "undecidable"); it is never filled with a default.
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { remoteBranchesOf, remoteTsv } from './scene.mjs';
+import { remoteAheadFiles, remoteBranchesOf, remoteTsv } from './scene.mjs';
 
 const sh = (name) => readFileSync(new URL(`./${name}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 export const KIT_SETUP = sh('kit-setup.sh');
@@ -32,7 +32,7 @@ export function remoteOf(fx) {
   if (!/^[\w./-]+$/.test(branch)) throw new Error(`fixture remote.branch: ${branch} is not a plain branch name`);
   // declared branches, local branches and the start branch (scene.mjs): only then the object has more than `branch`
   const ext = remoteBranchesOf(fx);
-  return ext ? { branch, branches: ext.branches, local: ext.local, start: ext.start, unpushed: ext.unpushed } : { branch };
+  return ext ? { branch, branches: ext.branches, local: ext.local, start: ext.start, unpushed: ext.unpushed, ...(ext.ahead ? { ahead: ext.ahead } : {}) } : { branch };
 }
 export function recordedOf(fx) {
   const out = {};
@@ -59,6 +59,7 @@ export function kitConf(kase) {
   const files = { 'setup.sh': KIT_SETUP };
   if (kase.remote) files.remote = `${kase.remote.branch}\n`;
   if (kase.remote?.branches) files['remote.tsv'] = remoteTsv(kase.remote);
+  if (kase.remote?.ahead) Object.assign(files, remoteAheadFiles(kase.remote.ahead));
   // a layer on a base tree image: the globs whose text the capture records (the file's presence turns the tree capture on)
   if (kase.layer) files.layer = (kase.layer.capture ?? []).map((g) => `${g}\n`).join('');
   for (const [name, text] of Object.entries(kase.ghSnapshot?.files ?? {})) files[`gh-snapshot/${name}`] = text;
@@ -79,7 +80,9 @@ const CALL = 'bash /tests/kit-capture.sh >/dev/null 2>&1 || true   # kit: git an
 // The start commit is given to the checks as PITWALL_FIXTURE_HEAD (a staged fixture's "start" is not the root commit).
 const WALK = 'done < <(find . -path ./.git -prune -o -type f -print0 | sort -z)';
 const LISTED = 'done < <(cat /tmp/pitwall-kit-paths.z 2>/dev/null | sort -z)';
-const HEAD_ENV = 'export PITWALL_FIXTURE_HEAD=$(cat /etc/pitwall/fixture-head 2>/dev/null)   # kit: the start commit, for the checks';
+// PITWALL_REMOTE: the path of the fixture's bare remote (empty without one), so a check can read the remote's end state
+// (Dev round 2, scene g0026-1: a check cannot know where the remote is; the local replay moves /etc/pitwall).
+const HEAD_ENV = 'export PITWALL_FIXTURE_HEAD=$(cat /etc/pitwall/fixture-head 2>/dev/null) PITWALL_REMOTE=$(cat /etc/pitwall/kit/remote-path 2>/dev/null)   # kit: the start commit and the remote, for the checks';
 export function patchTestSh(text, { layer = false } = {}) {
   let out = text;
   if (!out.includes('/tests/kit-capture.sh')) {

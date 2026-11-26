@@ -5,7 +5,7 @@
 // directory (or from a path the fixture names — material that is not tracked is given that way).
 //
 //   stage         [{ message, files?, files_dir?, remove?, date?, author? }]  commits on top of the base tree
-//   remote        true | { branch, branches?, local?, start?, unpushed? }     (capture.mjs remoteOf: the simple form)
+//   remote        true | { branch, branches?, local?, start?, unpushed?, ahead? } (capture.mjs remoteOf: the simple form)
 //   gh_snapshot   { file?, add?, drop?, refuse?, repo? }
 //   layer         { image, base_head?, capture?, local_base? }
 import { createHash } from 'node:crypto';
@@ -57,12 +57,17 @@ export function stageOf(fx, fixtureDir) {
 //   start      the branch the agent starts on (default: the mainline). Its revision must be HEAD: the tree the agent
 //              starts in is the tree the fixture built.
 //   unpushed   [names]  branches that exist locally only at the start (not on the remote)
+//   ahead      { <branch>: [{ message, files, author?, date? }] }  commits that exist ON THE REMOTE ONLY at the start: made
+//              on top of that remote branch after it is pushed, and not fetched (the local branch and its
+//              refs/remotes/origin/<branch> stay where the fixture built them). Another person's work the agent has not
+//              seen yet: a push that does not take it in first is a rewrite of the remote (Dev round 2, scene g0026-1).
+//              files: { path: text | null } (null removes). Dates default to after every staged commit.
 // Returns null (no extended form: capture.mjs remoteOf's { branch } stands), or
 //   { branch, branches, local, start, unpushed } with every default filled in.
 const BRANCH = /^[\w][\w./-]*$/;
 export function remoteBranchesOf(fx) {
   const r = fx?.remote;
-  if (!r || typeof r !== 'object' || !['branches', 'local', 'start', 'unpushed'].some((k) => r[k] !== undefined)) return null;
+  if (!r || typeof r !== 'object' || !['branches', 'local', 'start', 'unpushed', 'ahead'].some((k) => r[k] !== undefined)) return null;
   const branch = r.branch ? String(r.branch) : 'main';
   const name = (n, where) => { if (!BRANCH.test(String(n))) throw new Error(`fixture remote.${where}: ${n} is not a plain branch name`); return String(n); };
   const branches = {};
@@ -84,7 +89,37 @@ export function remoteBranchesOf(fx) {
     local[n] = up === null || up === false ? null : String(up);
   }
   if (!(start in local)) throw new Error(`fixture remote.local: the start branch ${start} is not listed`);
-  return { branch, branches, local, start, unpushed };
+  const ahead = [];
+  if (r.ahead !== undefined) {
+    if (!r.ahead || typeof r.ahead !== 'object' || Array.isArray(r.ahead)) throw new Error('fixture remote.ahead: { <branch>: [commits] }');
+    for (const [n, list] of Object.entries(r.ahead)) {
+      if (!onRemote(name(n, 'ahead'))) throw new Error(`fixture remote.ahead: ${n} is not a branch of the remote`);
+      if (!Array.isArray(list) || !list.length) throw new Error(`fixture remote.ahead.${n}: a list of commits`);
+      list.forEach((c, k) => {
+        const where = `fixture remote.ahead.${n}[${k}]`;
+        if (!c || typeof c.message !== 'string' || !c.message.trim()) throw new Error(`${where}: a commit needs a message`);
+        if (!c.files || typeof c.files !== 'object' || !Object.keys(c.files).length) throw new Error(`${where}: a commit needs files`);
+        const files = {};
+        for (const [p, t] of Object.entries(c.files)) { if (!plainPath(p) || /'/.test(p)) throw new Error(`${where}: ${JSON.stringify(p)} is not a plain relative path`); files[p] = t === null ? null : strip(String(t)); }
+        const date = c.date === undefined ? stamp(BASE_DATE + (200 + ahead.length) * 86400e3) : String(c.date);
+        if (!DATE.test(date)) throw new Error(`${where}: date ${date} is not YYYY-MM-DDThh:mm:ss+00:00`);
+        if (c.author !== undefined && !/^[\w .-]+$/.test(String(c.author))) throw new Error(`${where}: author ${c.author} is not a plain name`);
+        ahead.push({ branch: n, message: strip(c.message), author: c.author !== undefined ? String(c.author) : 'fixture', date, files });
+      });
+    }
+  }
+  return { branch, branches, local, start, unpushed, ...(ahead.length ? { ahead } : {}) };
+}
+// The files of the kit's configuration for the remote-only commits (kit-setup.sh reads remote-ahead/<k>/).
+export function remoteAheadFiles(ahead) {
+  const out = {};
+  (ahead ?? []).forEach((c, k) => {
+    const d = `remote-ahead/${String(k).padStart(3, '0')}`;
+    out[`${d}/branch`] = `${c.branch}\n`; out[`${d}/message`] = `${c.message}\n`; out[`${d}/author`] = `${c.author}\n`; out[`${d}/date`] = `${c.date}\n`;
+    out[`${d}/files.tsv`] = Object.entries(c.files).map(([p, t]) => `${t === null ? 'rm' : 'put'}\t${p}\n`).join('');
+    for (const [p, t] of Object.entries(c.files)) if (t !== null) out[`${d}/f/${p}`] = `${t}\n`;
+  });
+  return out;
 }
 // The lines of the kit's configuration file `remote.tsv` (kit-setup.sh reads them).
 export const remoteTsv = (r) => [

@@ -21,6 +21,7 @@ import { grade } from './grader.mjs';
 import { referenceEvents } from './gen-cases.mjs';
 import { harborCases } from './harbor-cases.mjs';
 import { replayFacts } from './replay-facts.mjs';
+import { fixtureState } from '../fixture.mjs';
 import { cliArgs } from './cli-args.mjs';
 
 const require = createRequire(import.meta.url);
@@ -67,7 +68,15 @@ function plant(d, task, finalText) {
 // (perturbAll gives replay-facts.mjs; without it, the simulated state alone, as for a spec with no fixture).
 export function perturbRole(spec, task, fx, opts = {}) {
   // `ref_step`: a step of the reference script (not a planted one): the replay runs it whole (replay-facts.mjs)
-  const ref = referenceEvents(spec, task, fx).map((e) => ({ ...e, ref_step: true }));
+  // opts.text: { start: { path: text }, files: { path: text } } — the start tree and the reference's content. An Edit /
+  // Write of the reference then carries the text it changes (old = the start, new = the reference), as a recorded
+  // trial does. Without it a Write into a test file that exists at the start (a staged one) leaves every row that
+  // reads an edit's text undecidable (Dev round 2, scene g0006-1: the reference "did not pass" for that reason only).
+  const withText = (e) => {
+    if (!opts.text || !['Edit', 'Write'].includes(e.tool) || typeof e.new === 'string' || typeof opts.text.files?.[e.path] !== 'string') return e;
+    return { ...e, old: opts.text.start?.[e.path] ?? '', new: opts.text.files[e.path] };
+  };
+  const ref = referenceEvents(spec, task, fx).map((e) => ({ ...withText(e), ref_step: true }));
   const facts = (events) => (opts.replay ? opts.replay(events) ?? {} : {});
   const run = (events, t = task, final) => grade(spec, { events, state: { ...stateOf(events), ...facts(events) }, task: t, kind: 'normal', final });
   const original = run(ref);
@@ -122,9 +131,16 @@ export function perturbRole(spec, task, fx, opts = {}) {
   }
   for (const [a, b] of spec.procedure.order ?? []) {
     const find = (id) => ref.findIndex((e) => grade(spec, { events: [e], state: stateOf([e]), task, kind: 'normal' }).action[id]);
-    const ia = find(a), ib = find(b);
-    if (ia < 0 || ib < 0) { results.push({ kind: 'swap-order', target: `${a}→${b}`, plantable: false }); continue; }
-    const block = groupOf(b, ib), moved = new Set(block);
+    const ia0 = find(a), ib = find(b);
+    if (ia0 < 0 || ib < 0) { results.push({ kind: 'swap-order', target: `${a}→${b}`, plantable: false }); continue; }
+    // The order is read after the LAST change (grader.mjs `chain`), so the swap moves b before the LAST step that does a:
+    // every step doing b after it (with its after-steps) goes in front of it. A step doing b earlier (a reference that
+    // reads `git show HEAD` before editing, which also shows a diff: Dev round 2, scene g0006-1) is left where it is;
+    // moving only that one changed nothing and the planted error was no error.
+    const as = doers(a), ia = as.length ? as.at(-1) : ia0;
+    const after = doers(b).filter((k) => k > ia);
+    const block = after.length ? [...new Set(after.flatMap((k) => [k, ...ref.map((e, j) => (e.after_of === b ? j : -1)).filter((j) => j > k)]))].sort((x, y) => x - y) : groupOf(b, ib);
+    const moved = new Set(block);
     const ev = ref.filter((_, k) => !moved.has(k)); ev.splice(ev.indexOf(ref[ia]), 0, ...block.map((k) => ref[k]));   // b (with its after-steps) moved just before a
     const g = run(ev);
     const row = g.order.find((o) => o.before === a && o.after === b);
@@ -200,7 +216,8 @@ export function perturbFixture(specPath, fxDir, { replay = true, bash } = {}) {
     how ??= r.replayed;
     return r.facts;
   };
-  const res = perturbRole(spec, fx.task ?? {}, fx, { replay: fn });
+  const start = Object.fromEntries(Object.entries(fixtureState(kase)).map(([p, f]) => [p, f.text]));
+  const res = perturbRole(spec, fx.task ?? {}, fx, { replay: fn, text: { start, files: fx.reference?.files ?? {} } });
   return { ...res, replay: how ?? 'off', staged: !!kase.staged };
 }
 

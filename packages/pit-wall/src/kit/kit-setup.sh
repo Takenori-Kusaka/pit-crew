@@ -76,6 +76,28 @@ EOF
     done < "$conf/remote.tsv"
     return 0
   }
+  ahead() { # the commits that exist on the remote only (scene.mjs remote.ahead): made in a clone, pushed, not fetched.
+    # They are pushed before the log below is reset, so they are not updates of the run; refs/remotes/origin/* of the
+    # agent's repository stay where the fixture built them (the agent has not seen this work yet)
+    [ -d "$conf/remote-ahead" ] || return 0
+    local d w b a t op p
+    for d in "$conf"/remote-ahead/*/; do
+      [ -f "$d/branch" ] || continue
+      b=$(sed -n 1p "$d/branch"); w=$(mktemp -d) || return 1
+      git clone -q --branch "$b" "$rp" "$w" >/dev/null 2>&1 || return 1
+      while IFS=$'\t' read -r op p; do
+        [ -n "$p" ] || continue
+        if [ "$op" = rm ]; then git -C "$w" rm -q -f -- "$p" >/dev/null 2>&1 || return 1
+        else mkdir -p "$w/$(dirname -- "$p")" && cp -- "$d/f/$p" "$w/$p" && git -C "$w" add -- "$p" || return 1; fi
+      done < "$d/files.tsv"
+      a=$(sed -n 1p "$d/author"); t=$(sed -n 1p "$d/date")
+      GIT_AUTHOR_DATE=$t GIT_COMMITTER_DATE=$t GIT_AUTHOR_NAME=$a GIT_AUTHOR_EMAIL=fixture@example.com GIT_COMMITTER_NAME=$a GIT_COMMITTER_EMAIL=fixture@example.com \
+        git -C "$w" commit -q -F "$d/message" >/dev/null 2>&1 || return 1
+      git -C "$w" push -q origin "HEAD:refs/heads/$b" >/dev/null 2>&1 || return 1
+      rm -rf "$w"
+    done
+    return 0
+  }
   if [ -n "$cur" ] && [ "$plan" = ok ] && mkdir -p "$(dirname -- "$rp")" && g init -q --bare "$rp" 2>/dev/null; then
     g --git-dir="$rp" symbolic-ref HEAD "refs/heads/$cur"
     g --git-dir="$rp" config core.logAllRefUpdates always
@@ -86,7 +108,7 @@ EOF
     # user is then rejected ("unable to append to ./logs/refs/heads/<ref>: Permission denied"; scene-check
     # 20261116T223040Z item 2). The chmod below only covers what exists at the end of the build.
     g --git-dir="$rp" config core.sharedRepository 0666
-    if g remote add origin "$rp" 2>/dev/null && pushall && localrefs; then
+    if g remote add origin "$rp" 2>/dev/null && pushall && localrefs && ahead; then
       # the log starts empty: the push that filled the remote is not an update of the run
       rm -rf "$rp/logs"
       cat > "$rp/hooks/post-receive" <<'HOOK'
