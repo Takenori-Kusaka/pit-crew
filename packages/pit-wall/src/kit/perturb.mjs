@@ -106,7 +106,12 @@ export function perturbRole(spec, task, fx, opts = {}) {
   // An action's step goes together with the steps the fixture placed AFTER it (`reference.after.<id>`, e.g. a second
   // file of the same fix written by a shell command): they carry the action on, so dropping or moving the action drops
   // or moves them too (otherwise the action is still done by them and the planted error is no error).
-  const groupOf = (id, idx) => [idx, ...ref.map((e, k) => (e.after_of === id ? k : -1)).filter((k) => k > idx)];
+  // Every step that does the action on its own counts, not only the first: a fixture may place a step that does it
+  // earlier (`reference.before.edit-impl` writes the new test and runs it red, so add-test and run-checks are done there
+  // too: Dev round 2, row 55). Dropping or moving only the first left the action done by the other, and the planted
+  // error was no error (CI on 32d71c48c).
+  const doers = (id) => ref.map((e, k) => (grade(spec, { events: [e], state: stateOf([e]), task, kind: 'normal' }).action[id] ? k : -1)).filter((k) => k >= 0);
+  const groupOf = (id, idx) => [...new Set([...doers(id), idx, ...ref.map((e, k) => (e.after_of === id ? k : -1)).filter((k) => k > idx)])].sort((x, y) => x - y);
   for (const id of spec.procedure.required ?? []) {
     // the reference has one event per required action, in topological order; find it by detecting
     const idx = ref.findIndex((e) => grade(spec, { events: [e], state: stateOf([e]), task, kind: 'normal' }).action[id]);
