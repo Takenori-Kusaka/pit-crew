@@ -228,3 +228,13 @@ test('dev-basic (copy, values switched on): the reference script runs, and the f
   assert.equal(sh(d, 'npm test').status, 0, 'reference: check passes');
   assert.match(sh(d, 'git log --format=%s').stdout, /\nfixture/);
 });
+
+// Dev round 2 (#109, defect 4 of verify-gate3.md 7.5): a Bash step may say how it ends (`exit`), so a reference can see
+// its new test fail before the fix (role action saw-red-before-impl). The code reaches the reference's events (and the
+// control built from them, harbor-cases.mjs controlsOf); without it the step ends 0, as before. Not an integer: an error.
+test('a Bash before-step may give its exit code; it reaches the reference events (the control: kit-real-fixtures, dev-h0061-*)', () => {
+  const ev = referenceEvents(spec, task0, withBefore({ 'edit-impl': [{ tool: 'Bash', command: 'npm test', exit: 1 }, { tool: 'Bash', command: 'git status' }] }));
+  const placed = ev.filter((e) => e.before_of === 'edit-impl');
+  assert.deepEqual(placed.map((e) => [e.command, e.exit]), [['npm test', 1], ['git status', 0]]);
+  assert.throws(() => referenceEvents(spec, task0, withBefore({ 'edit-impl': [{ tool: 'Bash', command: 'npm test', exit: 'red' }] })), /\[0\]: exit is an integer/);
+});

@@ -278,13 +278,17 @@ function eventMatch(d, e, task, run = {}, i = 0, from = 0, to = Infinity) {
   if (d.removes !== undefined) parts.push(!hasText ? U : count(e.old, d.removes, task) > count(e.new, d.removes, task));
   if (d.adds !== undefined) parts.push(!hasText ? U : count(e.new, d.adds, task) > count(e.old, d.adds, task));
   if (d.edits !== undefined) parts.push(!hasText ? U : count(e.old, d.edits, task) + count(e.new, d.edits, task) > 0);
+  // output: a regular expression on what the call printed (the record's `output`). Not recorded -> undecidable. An empty
+  // pattern (a task value the fixture does not give) matches nothing. Read for a check seen red when its exit code is
+  // hidden by a pipe (`npm test 2>&1 | grep …` ends 0 while printing the failure): gate run 3, verify-gate3.md 7.5 defect 4
+  if (d.output !== undefined) { const p = String(subst(d.output, task) ?? ''); parts.push(!p ? false : typeof e.output !== 'string' ? U : new RegExp(p, 'm').test(e.output)); }
   // query: the search term of a search-tool call (Grep's `pattern`). Not recorded -> undecidable
   if (d.query !== undefined) parts.push(typeof e.query !== 'string' ? U : new RegExp(subst(d.query, task), 's').test(e.query));
   return { v: and3(parts), k, files };
 }
 const STATE_KEYS = ['changed', 'changed_outside', 'unrecorded', 'checks_pass', 'gh', 'task', 'final', ...Object.keys(STATE_PREDICATES)];
 const HELPERS = { arr, globMatch };
-const EVENT_KEYS = ['tool', 'command', 'path', 'exit', 'removes', 'adds', 'edits', 'query', 'runs', 'net', 'operand', 'shown', 'reads', 'writes', 'contacts', 'done', 'pushes', 'attempt'];
+const EVENT_KEYS = ['tool', 'command', 'path', 'exit', 'output', 'removes', 'adds', 'edits', 'query', 'runs', 'net', 'operand', 'shown', 'reads', 'writes', 'contacts', 'done', 'pushes', 'attempt'];
 const isEdit = (e) => e.tool === 'Edit' || e.tool === 'Write' || e.tool === 'NotebookEdit';
 const textKept = (e) => typeof e.old === 'string' && typeof e.new === 'string';
 const MISS = { hit: false, at: -1 };

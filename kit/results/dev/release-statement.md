@@ -233,6 +233,7 @@ Dev のハーネス 第 8 版は、claude-fable-5-2 で出荷の門を通った�
   - 記録の時点の材料は commit `00137c99f`（`verdict.json` の `digest_check.recorded_head`）。その木で回すと、出る `verdict.md` は記録と 1 字も違わない（`kit/results/dev/infra-scenes.md` §15）。その木の `packages/pit-wall/` で、先に依存を入れておく（`yaml` などが要る。`git worktree` で取り出しただけでは入っていない）。
   - 今の木（規則 第 7 版）では、`--grade-only` だけだと終了コード 3 で止まる（規則と門の台本の digest が違う）。`--grade-only runs/gate3/run --regrade-with-current` で印つきの読み直しになり、結果は記録の下の `regrade/` に書かれる（記録の `verdict.*` は書き換えない）。ケースと行の結果は同じで、判定は `not_a_gate_result`、終了コードはこのときも 3（`infra-scenes.md` §16.3）。
   - 2026-11-20 の追記（次の版の作業。Issue #109）: この日から、今の木ではロール定義 `kit/roles/dev.yaml` の digest も記録と違う（「読んだ」の注記を採点器の読みに合わせて直した。§7 の欠陥 2。検出の式は変えていない）。gh の代役 `packages/pit-wall/shims/gh` も変えた（§7 の欠陥 7）。読み直しの `cases`・`rows`・`summary` は、この日の木でも記録の `verdict.json` と同じ（終了コード 3）。
+  - 2026-11-26 の追記: 次の版の作業で、表（下書き 10。行 55 を足した）・保留の部品 h-0061-1・採点器（出来事の鍵 `output`）・ロール定義（`saw-red-before-impl` の読み）を変えた（`kit/results/dev/round2-defects.md` の欠陥 4）。これより後の木で読み直すと、足した行のぶん `rows`・`summary` が記録と違う。記録と同じ読み直しは、公開のリポジトリの commit `10a8a0759` の木で行う（`git worktree add --detach <場所> 10a8a0759`。`packages/pit-wall/` で `npm ci`）。その木での読み直しの `cases`・`rows`・`summary` は記録と同じ（2026-11-26 に確かめた。終了コード 3）。
 - **生の記録の照合**: `raw-sha256.txt` に、84 試行の軌跡ファイル（`agent/trajectory.json`）の sha256 がある。`raw/` を持つ人は、`sha256sum -c raw-sha256.txt`（`runs/gate3/run/` で回す）で同じ記録かを確かめられる。
 - **検証役の読み**: `kit/results/dev/verify-gate3.md`（84 試行の全数）。書ける文・書けない文は §7.4 にある。
 

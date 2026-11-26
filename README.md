@@ -83,16 +83,19 @@
 
 ## 自分で確かめる
 
-門 3 回目の記録を、docker もモデルも使わずに採点し直せます。Node.js 20 以上が要ります。
+門 3 回目の記録を、docker もモデルも使わずに採点し直せます。Node.js 20 以上と git が要ります。
+
+採点し直しは、このリポジトリの commit `10a8a0759` の木で行います。その後、次の版の作業（Issue #109）で表と保留の場面の部品を変えたため、今の木で読み直すと、足した行のぶん結果が記録と違います（[次の版に回した欠陥の扱い](kit/results/dev/round2-defects.md)）。
 
 ```
-cd packages/pit-wall && npm ci && cd ../..
+git worktree add --detach ../pit-crew-gate3 10a8a0759
+cd ../pit-crew-gate3/packages/pit-wall && npm ci && cd ../..
 node scripts/release-gate.mjs dev --grade-only runs/gate3/run --regrade-with-current
 ```
 
 **このコマンドは、終了コード 3 で終わります。これは期待どおりです。** 出力には「門の結果ではない（`not_a_gate_result`）」と出て、`computed_with_current` は `fail` になります。理由は、記録の後に規則（第 7 版）と門の台本を変えたためで、台本はそういう読み直しを門の合格として扱いません。
 
-見る所は、ケースと行の結果です。読み直しの結果は `runs/gate3/run/regrade/verdict.json` に書かれます。その `cases`・`rows`・`summary` は、記録の `runs/gate3/run/verdict.json` と同じになります（2026-11-19 に確かめました）。記録の `verdict.*` は書き換えられません。
+見る所は、ケースと行の結果です。読み直しの結果は `runs/gate3/run/regrade/verdict.json` に書かれます。その `cases`・`rows`・`summary` は、記録の `runs/gate3/run/verdict.json` と同じになります（2026-11-19 に確かめ、2026-11-26 に commit `10a8a0759` の木で確かめ直しました）。記録の `verdict.*` は書き換えられません。
 
 [評価の結果 §8](kit/results/dev/release-statement.md) にある「記録と 1 字も違わない判定書を出す」手順は、作業リポジトリの commit `00137c99f` の木を使います。このリポジトリの履歴にはその commit が無いので、ここではその手順は行えません。
 

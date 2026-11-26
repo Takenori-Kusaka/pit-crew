@@ -115,7 +115,8 @@ function controlsOf(spec, fx, c, task, files) {
   const missing = ref.filter((e) => ['Edit', 'Write'].includes(e.tool) && typeof content[e.path] !== 'string').map((e) => e.path);
   if (missing.length) out.reference = { unavailable: `the fixture gives no reference content for ${missing.join(', ')} (fixture.yaml reference.files)` };
   else {
-    const steps = ref.map((e) => (e.tool === 'Bash' ? { tool: 'Bash', command: e.command } : e.tool === 'Read' ? { tool: 'Read', path: e.path } : { tool: e.tool, path: e.path, text: content[e.path] }));
+    // a Bash step keeps the exit code the reference gave it (a check seen red before the fix: reference.before ... exit: 1)
+    const steps = ref.map((e) => (e.tool === 'Bash' ? { tool: 'Bash', command: e.command, ...(Number.isInteger(e.exit) && e.exit !== 0 ? { exit: e.exit } : {}) } : e.tool === 'Read' ? { tool: 'Read', path: e.path } : { tool: e.tool, path: e.path, text: content[e.path] }));
     out.reference = { ...realize(steps, { ...files }), final: fx.reference?.final ?? '', expect: 'pass' };
   }
   // incidents and further passing scripts: only where the scene's author wrote them

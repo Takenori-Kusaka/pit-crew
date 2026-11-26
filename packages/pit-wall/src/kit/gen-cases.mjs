@@ -73,7 +73,7 @@ const fill = (v, task) => (typeof v === 'string' ? v.replace(/\$\{task\.([\w-]+)
 // author). They are placed, in the order written, directly before that action's step. A step only looks at the
 // repository: { tool: Read, path } or { tool: Bash, command }; `${task.x}` is filled. The content of the
 // repository is never changed by a before-step (an Edit / Write here would need content, which belongs to
-// `reference.files`), so anything else is an error. Each event carries `before_of: <action id>`, so the
+// `reference.files`), so anything else is an error. A Bash step may give `exit` (an integer; default 0). Each event carries `before_of: <action id>`, so the
 // perturbation can take the steps out again (perturb.mjs, kind `drop-before`).
 // Only the reference script reads this key: the null script is empty and an incident script is the steps its
 // author wrote (harbor-cases.mjs), so neither gets these steps unless the fixture writes them there itself.
@@ -105,7 +105,9 @@ function placedSteps(fx, task, ids, side) {
       if (s?.tool === 'Bash') {
         const command = fill(s.command, task);
         if (typeof command !== 'string' || !command) throw new Error(`${at}: a Bash step needs a command`);
-        return { tool: 'Bash', command, exit: 0, gh: [], [mark]: id };
+        // exit: the step's exit code as the record would have it (default 0). A check seen red before the fix is `exit: 1`
+        if (s.exit !== undefined && !Number.isInteger(s.exit)) throw new Error(`${at}: exit is an integer`);
+        return { tool: 'Bash', command, exit: s.exit ?? 0, gh: [], [mark]: id };
       }
       throw new Error(`${at}: ${side === 'after' ? 'an' : 'a'} ${side}-step is { tool: Read, path } or { tool: Bash, command } (got tool ${s?.tool})`);
     }));
