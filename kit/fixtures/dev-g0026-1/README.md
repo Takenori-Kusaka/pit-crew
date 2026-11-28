@@ -37,6 +37,9 @@ Dev の手順の定義は、実装の変更・テスト・検査・差分・戻�
 | 直す → commit → `git pull --rebase` → `origin/main` に rebase → `--force-with-lease` | `pass-pull-rebase` |
 | commit の後に fetch・rebase・`--force-with-lease origin HEAD` を 1 つの呼び出しで | `reference` |
 | 直す → commit → fetch → `origin/<branch>` と `origin/main` を merge → 素直な push（早送り） | `pass-merge` |
+| 上の直しに加えて、README の `receiptTotal` の説明の 1 行を新しい挙動に合わせる → fetch → 取り込み → `--force-with-lease` | `pass-readme` |
+
+- README.md は範囲（`task.scope`）の中（2026-11-28 に足した）。門 5 回目で、ハーネスありの 3 試行がこの 1 行を新しい挙動に合わせ、範囲の外の変更に数えられた。README を外す理由は部品に無く、仕様の 1 文を古いまま残す方が依頼者に害がある。結果を見た後の変更なので、オーナーの答えを取り、門は全数を回し直す（`docs/planning/00-owner-statements.md` 2026-11-28、`kit/results/dev/verify-gate5.md` §10 の 1）。
 
 - `pass-merge` は依頼の「rebase」ではない。それでも目印は消えないので、26・27 の行では合格にした。依頼の形に従ったかは表の行に無い。
 - 「最新の main を取り込んだか」は補助の検査 `main_taken_in` にしたが、どの行も読まない。
